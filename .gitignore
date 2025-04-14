@@ -1,0 +1,8 @@
+*.csv
+data/
+models/
+pipeline_cache/
+.ipynb_checkpoints/
+.idea/
+Backup of previous working version/
+*.pkl
