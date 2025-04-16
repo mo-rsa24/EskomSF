@@ -2,7 +2,10 @@
 dataset/
 model_configuration/
 pipeline_cache/
-.ipynb_checkpoints/
+*.ipynb_checkpoints*
 .idea/
 Backup of previous working version/
 *.pkl
+.ipynb_checkpoints/
+sqljdbc_12.10/
+venv/
