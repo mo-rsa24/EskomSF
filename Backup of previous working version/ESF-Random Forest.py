@@ -50,7 +50,7 @@
 # MAGIC # Initialize Spark session (Databricks environment should have this pre-configured)
 # MAGIC spark = SparkSession.builder.appName("Energy Consumption Prediction").getOrCreate()
 # MAGIC
-# MAGIC # Read data from SQL Server
+# MAGIC # Read dataset from SQL Server
 # MAGIC server_name = "jdbc:sqlserver://esk-maz-sdb-san-dev-01.database.windows.net"
 # MAGIC database_name = "ESK-MAZ-SDB-SAN-DEV-01"
 # MAGIC url = server_name + ";" + "databaseName=" + database_name + ";"
@@ -70,7 +70,7 @@
 # MAGIC
 # MAGIC # Get Forecasters input from Databricks task id
 # MAGIC # Define a SQL query to retrieve various forecasting details associated with a specific Databricks task.
-# MAGIC # This includes forecast methods, customer details, regional data, and task execution status.
+# MAGIC # This includes forecast methods, customer details, regional dataset, and task execution status.
 # MAGIC write_url = "jdbc:sqlserver://esk-maz-sdb-san-dev-01.database.windows.net;databaseName=ESK-MAZ-SDB-SAN-DEV-01"
 # MAGIC write_properties = {
 # MAGIC     "user": "arul",
@@ -109,7 +109,7 @@
 # MAGIC
 # MAGIC
 # MAGIC
-# MAGIC # Read data using Spark SQL by setting up the database connection and executing the SQL query.
+# MAGIC # Read dataset using Spark SQL by setting up the database connection and executing the SQL query.
 # MAGIC
 # MAGIC df = spark.read \
 # MAGIC     .format("jdbc") \
@@ -284,7 +284,7 @@ pandas_df = act_df.toPandas()
 
 # COMMAND ----------
 
-print(f"Actual consumption data used from {pandas_df['ReportingMonth'].min()} to {pandas_df['ReportingMonth'].max()}")
+print(f"Actual consumption dataset used from {pandas_df['ReportingMonth'].min()} to {pandas_df['ReportingMonth'].max()}")
 
 # COMMAND ----------
 
@@ -302,7 +302,7 @@ if len(multiple_customer_ids_list)>0:
     print(f"Future consumption will be predicted for customers:{multiple_customer_ids_list}")
 else:
     # Output the comma-separated IDs
-    print(f"No consumption data available for selected Customer IDs: {multiple_customer_ids_list} or customer ids selection is not successful")
+    print(f"No consumption dataset available for selected Customer IDs: {multiple_customer_ids_list} or customer ids selection is not successful")
 
 # COMMAND ----------
 
@@ -313,7 +313,7 @@ pandas_df['CustomerID'] = pandas_df['CustomerID'].astype(str)
 
 pandas_df['ReportingMonth'] = pd.to_datetime(pandas_df['ReportingMonth'],format ='%Y-%m-%d').dt.to_period('M').dt.to_timestamp()
 
-# Find the most recent reporting month in the data, which will be used to determine the starting point for forecasting.
+# Find the most recent reporting month in the dataset, which will be used to determine the starting point for forecasting.
 Actuals_last_date = pandas_df['ReportingMonth'].max() 
 
 # Generate a date range from the start date to the end date with a monthly frequency, starting on the first of each month.
@@ -365,13 +365,13 @@ def create_lag_features(df, lag_columns, lags):
     return df
 
 
-# Create lag features for forecast data
+# Create lag features for forecast dataset
 def create_forecast_lag_features(df, original_df, lag_columns, lags, step):
-    # Update the lag features for the forecast DataFrame using either historical or predicted data
+    # Update the lag features for the forecast DataFrame using either historical or predicted dataset
     for col in lag_columns:
         for lag in range(1, lags + 1):
             if step == 0:
-                # Use historical data to initialize lags
+                # Use historical dataset to initialize lags
                 df.loc[step, f"{col}_lag{lag}"] = original_df[col].iloc[-lag]
             else:
                 # Use previous predictions to update lags
@@ -381,14 +381,14 @@ def create_forecast_lag_features(df, original_df, lag_columns, lags, step):
     return df
 
 
-# Plot forecast vs historical data
+# Plot forecast vs historical dataset
 def plot_forecast_vs_historical(historical_df, forecast_df, features):
     """
     Plots historical vs forecasted values for specified features.
     
     Parameters:
-    - historical_df: DataFrame containing historical data
-    - forecast_df: DataFrame containing forecasted data
+    - historical_df: DataFrame containing historical dataset
+    - forecast_df: DataFrame containing forecasted dataset
     - features: List of feature names to plot
     """
     # Convert ReportingMonth to datetime at end of month
@@ -408,17 +408,17 @@ def plot_forecast_vs_historical(historical_df, forecast_df, features):
         historical_df[feature] = pd.to_numeric(historical_df[feature], errors='coerce').fillna(0)
         forecast_df[feature] = pd.to_numeric(forecast_df[feature], errors='coerce').fillna(0)
 
-    # Filter forecast data to only include periods after the last historical date
+    # Filter forecast dataset to only include periods after the last historical date
     forecast_df = forecast_df[forecast_df['ReportingMonth'] > last_historical_date]
 
-    # Group data by 'ReportingMonth'
+    # Group dataset by 'ReportingMonth'
     historical_grouped = historical_df.groupby('ReportingMonth')[features].mean().reset_index()
     forecast_grouped = forecast_df.groupby('ReportingMonth')[features].mean().reset_index()
 
 
     # Add check for empty dataframes
     if historical_grouped.empty or forecast_grouped.empty:
-        print("No data available for plotting.")
+        print("No dataset available for plotting.")
         return
 
     # Set plot size
@@ -493,7 +493,7 @@ for customer_id in unique_customers:
         rmse_results = {}
         r2_results = {}
 
-        # Create lag features for the historical data
+        # Create lag features for the historical dataset
         lag_columns = selected_columns[2:]   
         # print(lag_columns)  
 
@@ -573,7 +573,7 @@ for customer_id in unique_customers:
                 # best_model = grid_search.best_estimator_
                 # print(f"best_model parameter values are: {best_model}")
 
-                # # Evaluate model performance on test data
+                # # Evaluate model performance on test dataset
                 # Y_pred_test = model.predict(X_test_scaled)
 
                 Y_pred_test = model.predict(X_test_scaled)
@@ -610,11 +610,11 @@ for customer_id in unique_customers:
 
                     # Update lag features for current step
                     if pred_cur_mth == 0:
-                        # First step: Use historical data to initialize lags
+                        # First step: Use historical dataset to initialize lags
                         forecast_df = create_forecast_lag_features(forecast_df, podel_df, lag_columns, lags=3, step=pred_cur_mth)
                         
                     else:
-                        # Subsequent steps: Use previously predicted data to update lags
+                        # Subsequent steps: Use previously predicted dataset to update lags
                         forecast_df = create_forecast_lag_features(forecast_df, forecast_df, lag_columns, lags=3, step=pred_cur_mth)
 
                     # Convert forecast_df columns to numeric types

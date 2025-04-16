@@ -55,7 +55,7 @@ databrick_task_id = dbutils.widgets.get("DatabrickTaskID")
 # COMMAND ----------
 
 
-# Read data from SQL Server
+# Read dataset from SQL Server
 server_name = "jdbc:sqlserver://fortrack-maz-sdb-san-qa-01.database.windows.net"
 database_name = "FortrackDB"
 # url = server_name + ";" + "databaseName=" + database_name + ";"
@@ -92,7 +92,7 @@ password = "vuxpapyvu@2024"
 
 # Get Forecasters input from Databricks task id
 # Define a SQL query to retrieve various forecasting details associated with a specific Databricks task.
-# This includes forecast methods, customer details, regional data, and task execution status.
+# This includes forecast methods, customer details, regional dataset, and task execution status.
 
 
 # ufm.Name
@@ -125,7 +125,7 @@ ORDER BY
 
 # WHERE ExecutionStatus IN ('In Progress')
 try:
-# Read data using Spark SQL by setting up the database connection and executing the SQL query.
+# Read dataset using Spark SQL by setting up the database connection and executing the SQL query.
     df = spark.read \
         .format("jdbc") \
         .option("url", url) \
@@ -341,12 +341,12 @@ try:
     pandas_df['ReportingMonth'] = pd.to_datetime(pandas_df['ReportingMonth'],format ='%Y-%m-%d').dt.to_period('M').dt.to_timestamp()
 
     if act_df.rdd.isEmpty():
-        raise ValueError("No historical data available for the selected customers.")
+        raise ValueError("No historical dataset available for the selected customers.")
 
     #print(query_act_cons)
     
 except ValueError as ve:
-    # Handle the error for empty data
+    # Handle the error for empty dataset
     #print(f"Error: {ve}")
     dbutils.notebook.exit(f"Notebook execution stopped: {ve}")  # Stops notebook execution in Databricks
 
@@ -374,16 +374,16 @@ if len(multiple_customer_ids_list)>0:
     print(f"Future consumption will be predicted for customers:{multiple_customer_ids_list}")
 else:
     # Output the comma-separated IDs
-    print(f"No consumption data available for selected Customer IDs: {multiple_customer_ids_list} or customer ids selection is not successful")
+    print(f"No consumption dataset available for selected Customer IDs: {multiple_customer_ids_list} or customer ids selection is not successful")
 
 # COMMAND ----------
 
 if len(pandas_df) == 0:
-    print("No data found for these customers")
+    print("No dataset found for these customers")
 
 # COMMAND ----------
 
-# Find the most recent reporting month in the data, which will be used to determine the starting point for forecasting.
+# Find the most recent reporting month in the dataset, which will be used to determine the starting point for forecasting.
 Actuals_last_date = pandas_df['ReportingMonth'].max() 
 
 
@@ -405,7 +405,7 @@ n_periods = len(forecast_dates)
 
 # COMMAND ----------
 
-# validate if data is only processed for intended customer
+# validate if dataset is only processed for intended customer
 
 unique_customers = pandas_df['CustomerID'].unique()
 unique_PodIDs = pandas_df['PodID'].unique()
@@ -484,10 +484,10 @@ def automated_forecasts_for_all_types(data,  selected_columns,n_periods=n_period
     for customer_id in data['CustomerID'].unique():
         customer_forecasts = {}
         
-        # Ensure data is sorted by ReportingMonth
+        # Ensure dataset is sorted by ReportingMonth
         customer_data = data[data['CustomerID'] == customer_id].sort_values('PodID')
         if customer_data.empty:
-            #print(f"No data found for CustomerID: {customer_id}")
+            #print(f"No dataset found for CustomerID: {customer_id}")
             continue
         unique_podel_ids = customer_data["PodID"].unique()
 
@@ -501,7 +501,7 @@ def automated_forecasts_for_all_types(data,  selected_columns,n_periods=n_period
             # #print("Summary with total:")
             # #print(summary)
             if podel_df.empty:
-                #print(f"No data found for PODEL_ID: {podel_id}")
+                #print(f"No dataset found for PODEL_ID: {podel_id}")
                 continue
             future_predictions = []
 
@@ -535,7 +535,7 @@ def automated_forecasts_for_all_types(data,  selected_columns,n_periods=n_period
                 try:
 
                     if podel_df[cons_type].isnull().all():
-                        #print(f"No data found for consumption type: {cons_type}")
+                        #print(f"No dataset found for consumption type: {cons_type}")
                         continue  
                  
                     # Prepare the time series  by setting ReportingMonth as the index
@@ -613,7 +613,7 @@ def automated_forecasts_for_all_types(data,  selected_columns,n_periods=n_period
                         # Construct a DataFrame to store the forecast results
 
 
-                                    # Prepare data for performance metrics insertion
+                                    # Prepare dataset for performance metrics insertion
                     #print("cons_type"+str(cons_type))
                     performance_data[f"RMSE_{cons_type}"] = sarima_rmse
                     performance_data[f"R2_{cons_type}"] = sarmia_r2
@@ -683,7 +683,7 @@ def automated_forecasts_for_all_types(data,  selected_columns,n_periods=n_period
 
 
 
-#     # Execute the forecasting function with the loaded data.
+#     # Execute the forecasting function with the loaded dataset.
 forecast_combined_df = automated_forecasts_for_all_types(pandas_df,selected_columns)
 
 

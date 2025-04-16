@@ -18,7 +18,7 @@ def automated_forecasts_for_all_types(data, selected_columns,forecast_dates, deb
     # Iterate through each unique customer ID in the dataset.
     for customer_id in data['CustomerID'].unique():
         customer_forecasts = {}
-        # Ensure data is sorted by ReportingMonth
+        # Ensure dataset is sorted by ReportingMonth
         customer_data = data[data['CustomerID'] == customer_id].sort_values('PodID')
         if customer_data.empty:
             continue

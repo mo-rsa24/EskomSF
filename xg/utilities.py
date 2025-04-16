@@ -9,13 +9,13 @@ def create_lag_features(df, lag_columns, lags):
     return df
 
 
-# Create lag features for forecast data
+# Create lag features for forecast dataset
 def create_forecast_lag_features(df, original_df, lag_columns, lags, step):
-    # Update the lag features for the forecast DataFrame using either historical or predicted data
+    # Update the lag features for the forecast DataFrame using either historical or predicted dataset
     for col in lag_columns:
         for lag in range(1, lags + 1):
             if step == 0:
-                # Use historical data to initialize lags
+                # Use historical dataset to initialize lags
                 df.loc[step, f"{col}_lag{lag}"] = original_df[col].iloc[-lag]
             else:
                 # Use previous predictions to update lags
@@ -25,14 +25,14 @@ def create_forecast_lag_features(df, original_df, lag_columns, lags, step):
     return df
 
 
-# Plot forecast vs historical data
+# Plot forecast vs historical dataset
 def plot_forecast_vs_historical(historical_df, forecast_df, features):
     """
     Plots historical vs forecasted values for specified features.
 
     Parameters:
-    - historical_df: DataFrame containing historical data
-    - forecast_df: DataFrame containing forecasted data
+    - historical_df: DataFrame containing historical dataset
+    - forecast_df: DataFrame containing forecasted dataset
     - features: List of feature names to plot
     """
     # Convert ReportingMonth to datetime at end of month
@@ -52,16 +52,16 @@ def plot_forecast_vs_historical(historical_df, forecast_df, features):
         historical_df[feature] = pd.to_numeric(historical_df[feature], errors='coerce').fillna(0)
         forecast_df[feature] = pd.to_numeric(forecast_df[feature], errors='coerce').fillna(0)
 
-    # Filter forecast data to only include periods after the last historical date
+    # Filter forecast dataset to only include periods after the last historical date
     forecast_df = forecast_df[forecast_df['ReportingMonth'] > last_historical_date]
 
-    # Group data by 'ReportingMonth'
+    # Group dataset by 'ReportingMonth'
     historical_grouped = historical_df.groupby('ReportingMonth')[features].mean().reset_index()
     forecast_grouped = forecast_df.groupby('ReportingMonth')[features].mean().reset_index()
 
     # Add check for empty dataframes
     if historical_grouped.empty or forecast_grouped.empty:
-        # print("No data available for plotting.")
+        # print("No dataset available for plotting.")
         return
 
     # Set plot size

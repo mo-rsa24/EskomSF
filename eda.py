@@ -4,7 +4,7 @@ import re
 from db.queries import get_sample_rows, get_user_forecast_data, row_to_config
 import os
 from etl.etl import *
-from dml.dml import *
+from data.dml import *
 os.environ["ENV"] = "DEV"
 
 ufm_df = get_user_forecast_data()
@@ -35,7 +35,7 @@ row = ufm_df.iloc[0]
 config = row_to_config(row)
 
 if df.empty:
-    logging.error("🚫 DataFrame is empty. Check input filters or data source.")
+    logging.error("🚫 DataFrame is empty. Check input filters or dataset source.")
 else:
     customer_ids, pod_ids = get_unique_list_of_customer_and_pod(df)
 
@@ -49,7 +49,7 @@ else:
 
     # Extract actuals range
     latest_actual_date = df.index.max()
-    logging.info(f"📍 Last actuals month in data: {latest_actual_date.strftime('%Y-%m')}")
+    logging.info(f"📍 Last actuals month in dataset: {latest_actual_date.strftime('%Y-%m')}")
 
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -114,7 +114,7 @@ plt.show()
 from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
 from statsmodels.tsa.stattools import adfuller
 
-# Prepare data for a single customer to perform time series diagnostics
+# Prepare dataset for a single customer to perform time series diagnostics
 df = df.reset_index()
 single_customer = df['CustomerID'].value_counts().idxmax()
 cust_df = df[df['CustomerID'] == single_customer].sort_values('ReportingMonth')
@@ -184,7 +184,7 @@ from sklearn.decomposition import PCA
 # Aggregate average consumption per customer
 customer_profiles = df.groupby('CustomerID')[consumption_cols].mean()
 
-# Standardize data
+# Standardize dataset
 scaler = StandardScaler()
 scaled_profiles = scaler.fit_transform(customer_profiles)
 

@@ -35,7 +35,7 @@ debug = False
 # COMMAND ----------
 
 
-# Read data from SQL Server
+# Read dataset from SQL Server
 server_name = "jdbc:sqlserver://esk-maz-sdb-san-dev-01.database.windows.net"
 database_name = "ESK-MAZ-SDB-SAN-DEV-01"
 url = server_name + ";" + "databaseName=" + database_name + ";"
@@ -66,7 +66,7 @@ password = "aari@Singds.8734"
 
 # Get Forecasters input from Databricks task id
 # Define a SQL query to retrieve various forecasting details associated with a specific Databricks task.
-# This includes forecast methods, customer details, regional data, and task execution status.
+# This includes forecast methods, customer details, regional dataset, and task execution status.
 
 # ufm.Name
 query = f"""
@@ -99,7 +99,7 @@ print(query)
 
 
 
-# Read data using Spark SQL by setting up the database connection and executing the SQL query.
+# Read dataset using Spark SQL by setting up the database connection and executing the SQL query.
 
 df = spark.read \
     .format("jdbc") \
@@ -274,7 +274,7 @@ print(pandas_df.head())
 
 # COMMAND ----------
 
-# Find the most recent reporting month in the data, which will be used to determine the starting point for forecasting.
+# Find the most recent reporting month in the dataset, which will be used to determine the starting point for forecasting.
 Actuals_last_date = pandas_df['ReportingMonth'].max() 
 
 
@@ -297,7 +297,7 @@ print(f"Number of periods to forecast: {n_periods}")
 
 # COMMAND ----------
 
-# validate if data is only processed for intended customer
+# validate if dataset is only processed for intended customer
 unique_customers = pandas_df['CustomerID'].unique()
 print(unique_customers)
 
@@ -359,8 +359,8 @@ def plot_forecast_vs_historical(historical_df, forecast_df, features):
     Plots historical vs forecasted values for specified features.
     
     Parameters:
-    - historical_df: DataFrame containing historical data
-    - forecast_df: DataFrame containing forecasted data
+    - historical_df: DataFrame containing historical dataset
+    - forecast_df: DataFrame containing forecasted dataset
     - features: List of feature names to plot
     """
     # Convert ReportingMonth to datetime at end of month
@@ -380,17 +380,17 @@ def plot_forecast_vs_historical(historical_df, forecast_df, features):
         historical_df[feature] = pd.to_numeric(historical_df[feature], errors='coerce').fillna(0)
         forecast_df[feature] = pd.to_numeric(forecast_df[feature], errors='coerce').fillna(0)
 
-    # Filter forecast data to only include periods after the last historical date
+    # Filter forecast dataset to only include periods after the last historical date
     forecast_df = forecast_df[forecast_df['ReportingMonth'] > last_historical_date]
 
-    # Group data by 'ReportingMonth'
+    # Group dataset by 'ReportingMonth'
     historical_grouped = historical_df.groupby('ReportingMonth')[features].mean().reset_index()
     forecast_grouped = forecast_df.groupby('ReportingMonth')[features].mean().reset_index()
 
 
     # Add check for empty dataframes
     if historical_grouped.empty or forecast_grouped.empty:
-        print("No data available for plotting.")
+        print("No dataset available for plotting.")
         return
 
     # Set plot size
@@ -446,7 +446,7 @@ def automated_forecasts_for_all_types(data,  selected_columns,n_periods=n_period
     for customer_id in data['CustomerID'].unique():
         customer_forecasts = {}
         forecast_combined_df =[]
-        # Ensure data is sorted by ReportingMonth
+        # Ensure dataset is sorted by ReportingMonth
         customer_df = data[data['CustomerID'] == customer_id].sort_values('PodID')
         unique_podel_ids = customer_df["PodID"].unique()
 
@@ -595,7 +595,7 @@ def automated_forecasts_for_all_types(data,  selected_columns,n_periods=n_period
 
 
 
-#     # Execute the forecasting function with the loaded data.
+#     # Execute the forecasting function with the loaded dataset.
 forecast_combined_df = automated_forecasts_for_all_types(pandas_df,selected_columns)
 forecast_combined_df['UserForecastMethodID'] = UFMID
 
@@ -609,7 +609,7 @@ forecast_combined_spark_df = spark.createDataFrame(forecast_combined_df)
 forecast_combined_spark_df.write.jdbc(url=write_url, table=target_table_name, mode="append", properties=write_properties)
 
 
-    # Plot forecast vs historical data
+    # Plot forecast vs historical dataset
 
 
 
@@ -624,10 +624,10 @@ forecast_combined_spark_df.write.jdbc(url=write_url, table=target_table_name, mo
 # from statsmodels.tsa.arima.model import ARIMA
 # import matplotlib.pyplot as plt
 
-# # Example time series data
-# data = {'Time': pd.date_range(start='2020-01-01', periods=10, freq='M'),
+# # Example time series dataset
+# dataset = {'Time': pd.date_range(start='2020-01-01', periods=10, freq='M'),
 #         'Value': [112, 118, 132, 129, 121, 135, 148, 145, 150, 156]}
-# df = pd.DataFrame(data)
+# df = pd.DataFrame(dataset)
 
 # # Plot the time series
 # plt.plot(df['Time'], df['Value'])

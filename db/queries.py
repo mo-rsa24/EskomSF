@@ -1,12 +1,12 @@
 import pandas as pd
-from .utilities import *
+from .utilities import with_db_connection, logger
 from dataclasses import dataclass
 
 @with_db_connection
 def get_all_query(conn, query):
     cursor = conn.cursor()
     cursor.execute(query)
-    logging.info("Query executed successfully.")
+    logger.info("Query executed successfully.")
     return cursor.fetchall()
 
 
@@ -14,7 +14,7 @@ def get_sample_rows(table_name="dbo.DataBrickTasks", limit=5):
     query = f"SELECT TOP {limit} * FROM {table_name}"
     return get_all_query(query)
 
-def get_predictive_data(UFMID=64): # This data that we fine-tune
+def get_predictive_data(UFMID=64): # This dataset that we fine-tune
     query_act_cons = f"""
                          ( select * from dbo.PredictiveInputData({UFMID}))
                         """

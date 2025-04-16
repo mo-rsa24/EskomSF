@@ -16,7 +16,7 @@ def customer_segmentation(df, consumption_cols=None):
     # Aggregate average consumption per customer
     customer_profiles = df.groupby('CustomerID')[consumption_cols].mean()
 
-    # Standardize data
+    # Standardize dataset
     scaler = StandardScaler()
     scaled_profiles = scaler.fit_transform(customer_profiles)
 

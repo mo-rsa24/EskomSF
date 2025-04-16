@@ -45,7 +45,7 @@ debug = False
 # COMMAND ----------
 
 
-# Read data from SQL Server
+# Read dataset from SQL Server
 server_name = "jdbc:sqlserver://fortrack-maz-sdb-san-qa-01.database.windows.net"
 database_name = "FortrackDB"
 url = server_name + ";" + "databaseName=" + database_name + ";"
@@ -76,7 +76,7 @@ password = "vuxpapyvu@2024"
 
 # Get Forecasters input from Databricks task id
 # Define a SQL query to retrieve various forecasting details associated with a specific Databricks task.
-# This includes forecast methods, customer details, regional data, and task execution status.
+# This includes forecast methods, customer details, regional dataset, and task execution status.
 
 # ufm.Name
 
@@ -110,7 +110,7 @@ ORDER BY
 
 try:
 
-    # Read data using Spark SQL by setting up the database connection and executing the SQL query.
+    # Read dataset using Spark SQL by setting up the database connection and executing the SQL query.
 
     df = spark.read \
         .format("jdbc") \
@@ -320,13 +320,13 @@ try:
     # Convert the Spark DataFrame to a Pandas DataFrame to use with time series analysis in Python.
     #print(pandas_df.head())
     if act_df.rdd.isEmpty():
-        raise ValueError("No historical data available for the selected customers.")
+        raise ValueError("No historical dataset available for the selected customers.")
         
     act_df = act_df.orderBy("PodID", "ReportingMonth")
     pandas_df = act_df.toPandas()
     
 except ValueError as ve:
-    # Handle the error for empty data
+    # Handle the error for empty dataset
     #print(f"Error: {ve}")
     dbutils.notebook.exit(f"Notebook execution stopped: {ve}")  # Stops notebook execution in Databricks
 
@@ -346,7 +346,7 @@ except Exception as e:
 
 # COMMAND ----------
 
-# Find the most recent reporting month in the data, which will be used to determine the starting point for forecasting.
+# Find the most recent reporting month in the dataset, which will be used to determine the starting point for forecasting.
 Actuals_last_date = pandas_df['ReportingMonth'].max() 
 
 
@@ -369,7 +369,7 @@ n_periods = len(forecast_dates)
 
 # COMMAND ----------
 
-# validate if data is only processed for intended customer
+# validate if dataset is only processed for intended customer
 unique_customers = pandas_df['CustomerID'].unique()
 #print(unique_customers)
 
@@ -454,10 +454,10 @@ def automated_forecasts_for_all_types(data,  selected_columns,n_periods=n_period
         customer_forecasts = {}
         all_forecasts = []
         forecast_combined_df = []
-        # Ensure data is sorted by ReportingMonth
+        # Ensure dataset is sorted by ReportingMonth
         customer_df = data[data['CustomerID'] == customer_id].sort_values('PodID')
         if customer_df.empty:
-            #print(f"No data found for CustomerID: {customer_id}")
+            #print(f"No dataset found for CustomerID: {customer_id}")
             continue
         unique_podel_ids = customer_df["PodID"].unique()
 
@@ -467,7 +467,7 @@ def automated_forecasts_for_all_types(data,  selected_columns,n_periods=n_period
 
             podel_df = customer_df[customer_df["PodID"] == podel_id].sort_values('ReportingMonth')
             if podel_df.empty:
-                #print(f"No data found for PODEL_ID: {podel_id}")
+                #print(f"No dataset found for PODEL_ID: {podel_id}")
                 continue
             performance_data = {
                 'ModelName': 'ARIMA',
@@ -499,7 +499,7 @@ def automated_forecasts_for_all_types(data,  selected_columns,n_periods=n_period
                 try:
                     
                     if podel_df[cons_type].isnull().all():
-                        #print(f"No data found for consumption type: {cons_type}")
+                        #print(f"No dataset found for consumption type: {cons_type}")
                         continue
                     # Prepare the time series by setting ReportingMonth as the index
                     series = podel_df.set_index('ReportingMonth')[cons_type].astype(float)
@@ -597,11 +597,11 @@ def automated_forecasts_for_all_types(data,  selected_columns,n_periods=n_period
 
 
 
-#     # Execute the forecasting function with the loaded data.
+#     # Execute the forecasting function with the loaded dataset.
 forecast_combined_df = automated_forecasts_for_all_types(pandas_df,selected_columns)
 
 
-    # Plot forecast vs historical data
+    # Plot forecast vs historical dataset
 
 
 
@@ -616,10 +616,10 @@ forecast_combined_df = automated_forecasts_for_all_types(pandas_df,selected_colu
 # from statsmodels.tsa.arima.model import ARIMA
 # import matplotlib.pyplot as plt
 
-# # Example time series data
-# data = {'Time': pd.date_range(start='2020-01-01', periods=10, freq='M'),
+# # Example time series dataset
+# dataset = {'Time': pd.date_range(start='2020-01-01', periods=10, freq='M'),
 #         'Value': [112, 118, 132, 129, 121, 135, 148, 145, 150, 156]}
-# df = pd.DataFrame(data)
+# df = pd.DataFrame(dataset)
 
 # # Plot the time series
 # plt.plot(df['Time'], df['Value'])

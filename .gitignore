@@ -1,6 +1,6 @@
 *.csv
-data/
-models/
+dataset/
+model_configuration/
 pipeline_cache/
 .ipynb_checkpoints/
 .idea/

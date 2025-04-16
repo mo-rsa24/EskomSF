@@ -50,7 +50,7 @@ debug = True
 # COMMAND ----------
 
 
-# Read data from SQL Server
+# Read dataset from SQL Server
 server_name = "jdbc:sqlserver://fortrack-maz-sdb-san-qa-01.database.windows.net"
 database_name = "FortrackDB"
 # url = server_name + ";" + "databaseName=" + database_name + ";"
@@ -87,7 +87,7 @@ password = "aari@Singds.8734"
 
 # Get Forecasters input from Databricks task id
 # Define a SQL query to retrieve various forecasting details associated with a specific Databricks task.
-# This includes forecast methods, customer details, regional data, and task execution status.
+# This includes forecast methods, customer details, regional dataset, and task execution status.
 
 error_message=None
 
@@ -122,7 +122,7 @@ print(query)
 
 # WHERE ExecutionStatus IN ('In Progress')
 
-# Read data using Spark SQL by setting up the database connection and executing the SQL query.
+# Read dataset using Spark SQL by setting up the database connection and executing the SQL query.
 
 # if debug:
 #     print(write_url)
@@ -320,7 +320,7 @@ print(query_act_cons)
 
 
 try:
-    # Load the data
+    # Load the dataset
     act_df = spark.read \
         .format("jdbc") \
         .option("url", url) \
@@ -331,14 +331,14 @@ try:
 
     # Check if the DataFrame is empty
     if act_df.rdd.isEmpty():
-        raise ValueError("No historical data available for the selected customers.")
+        raise ValueError("No historical dataset available for the selected customers.")
     
-    # Proceed with further processing if data is available
+    # Proceed with further processing if dataset is available
     act_df = act_df.orderBy("PodID", "ReportingMonth")
     pandas_df = act_df.toPandas()
 
 except ValueError as ve:
-    # Handle the error for empty data
+    # Handle the error for empty dataset
     print(f"Error: {ve}")
     dbutils.notebook.exit(f"Notebook execution stopped: {ve}")  # Stops notebook execution in Databricks
 
@@ -372,16 +372,16 @@ if len(multiple_customer_ids_list)>0:
     print(f"Future consumption will be predicted for customers:{multiple_customer_ids_list}")
 else:
     # Output the comma-separated IDs
-    print(f"No consumption data available for selected Customer IDs: {multiple_customer_ids_list} or customer ids selection is not successful")
+    print(f"No consumption dataset available for selected Customer IDs: {multiple_customer_ids_list} or customer ids selection is not successful")
 
 # COMMAND ----------
 
 if len(pandas_df) == 0:
-    print("No data found for these customers")
+    print("No dataset found for these customers")
 
 # COMMAND ----------
 
-# Find the most recent reporting month in the data, which will be used to determine the starting point for forecasting.
+# Find the most recent reporting month in the dataset, which will be used to determine the starting point for forecasting.
 Actuals_last_date = pandas_df['ReportingMonth'].max() 
 
 
@@ -403,7 +403,7 @@ print(f"Number of periods to forecast: {n_periods}")
 
 # COMMAND ----------
 
-# validate if data is only processed for intended customer
+# validate if dataset is only processed for intended customer
 
 unique_customers = pandas_df['CustomerID'].unique()
 unique_PodIDs = pandas_df['PodID'].unique()
@@ -481,7 +481,7 @@ def automated_forecasts_for_all_types(data,  selected_columns,n_periods=n_period
     for customer_id in data['CustomerID'].unique():
         customer_forecasts = {}
         
-        # Ensure data is sorted by ReportingMonth
+        # Ensure dataset is sorted by ReportingMonth
         customer_data = data[data['CustomerID'] == customer_id].sort_values('PodID')
         unique_podel_ids = customer_data["PodID"].unique()
 
@@ -587,7 +587,7 @@ def automated_forecasts_for_all_types(data,  selected_columns,n_periods=n_period
                         # Construct a DataFrame to store the forecast results
 
 
-                                    # Prepare data for performance metrics insertion
+                                    # Prepare dataset for performance metrics insertion
                     print("cons_type"+str(cons_type))
                     performance_data[f"RMSE_{cons_type}"] = sarima_rmse
                     performance_data[f"R2_{cons_type}"] = sarmia_r2
@@ -659,7 +659,7 @@ def automated_forecasts_for_all_types(data,  selected_columns,n_periods=n_period
 
 
 
-#     # Execute the forecasting function with the loaded data.
+#     # Execute the forecasting function with the loaded dataset.
 forecast_combined_df = automated_forecasts_for_all_types(pandas_df,selected_columns)
 
 

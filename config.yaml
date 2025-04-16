@@ -1,22 +1,60 @@
 # config.yaml
 
+selected_columns: ["PeakConsumption"]
+consumption_types: ["PeakConsumption"]
+mode: "train"
+# This field may come from the database (and may be an empty string)
+model_parameters: ""
+
+# Default hyperparameters for each model if the incoming value is null.
+model_defaults:
+  arima: "(3,3,3)"
+  sarima: "(1,1,1)(1,1,1,4)"
+  randomforest: "(50,10,2,1,3,true)"
+  xgboost: "(5,2,0.3,0.3,0.8)"
+
+# Cross-validation configuration:
+cv_config:
+  n_splits: 3
+  shuffle: true
+  random_state: 42
+
+# Pipeline configurations for each model.
+pipeline_config_randomforest:
+  imputer_strategy: "mean"
+  rfecv:
+    step: 0.1
+    cv: 3
+    scoring: "neg_mean_absolute_error"
+
+pipeline_config_xgboost:
+  imputer_strategy: "mean"
+  rfecv:
+    step: 0.1
+    cv: 3
+    scoring: "neg_mean_absolute_error"
+
+# Hyperparameter grids for GridSearchCV
+xgboost_grid:
+  n_estimators: [100, 200, 300]
+  max_depth: [3, 5, 7, 10]
+  learning_rate: [0.01, 0.1, 0.3]
+  subsample: [0.8, 0.9, 1.0]
+  colsample_bytree: [0.7, 0.8, 1.0]
+  random_state: [42]
+
+randomforest_grid:
+  n_estimators: [50, 100, 150]
+  max_depth: [null, 10, 20]
+  min_samples_split: [2, 4, 6]
+  min_samples_leaf: [1, 2, 4]
+  random_state: [42]
+
 debug: true
-
 visualize: false
-
 DEV:
   server: "jdbc:sqlserver://fortrack-maz-sdb-san-dev-01.database.windows.net"
   database: "FortrackDB"
-
 QA:
   server: "jdbc:sqlserver://fortrack-maz-sdb-san-qa-01.database.windows.net"
   database: "FortrackDB"
-
-random_forest:
-  regression:
-    n_estimators: [100, 200]
-    max_depth: [null, 10]
-    min_samples_split: [2, 5]
-    min_samples_leaf: [1, 3]
-    random_state: [42]
-    oob_score: [true]

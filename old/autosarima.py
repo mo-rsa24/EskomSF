@@ -37,10 +37,10 @@ def automated_forecasts_for_all_types(data, selected_columns, forecast_dates, or
     for customer_id in data['CustomerID'].unique():
         customer_forecasts = {}
 
-        # Ensure data is sorted by ReportingMonth
+        # Ensure dataset is sorted by ReportingMonth
         customer_data = data[data['CustomerID'] == customer_id].sort_values('PodID')
         if customer_data.empty:
-            # print(f"No data found for CustomerID: {customer_id}")
+            # print(f"No dataset found for CustomerID: {customer_id}")
             continue
         unique_podel_ids = customer_data["PodID"].unique()
 
@@ -54,7 +54,7 @@ def automated_forecasts_for_all_types(data, selected_columns, forecast_dates, or
             # #print("Summary with total:")
             # #print(summary)
             if podel_df.empty:
-                # print(f"No data found for PODEL_ID: {podel_id}")
+                # print(f"No dataset found for PODEL_ID: {podel_id}")
                 continue
             future_predictions = []
 
@@ -87,7 +87,7 @@ def automated_forecasts_for_all_types(data, selected_columns, forecast_dates, or
                 try:
 
                     if podel_df[cons_type].isnull().all():
-                        # print(f"No data found for consumption type: {cons_type}")
+                        # print(f"No dataset found for consumption type: {cons_type}")
                         continue
 
                         # Prepare the time series  by setting ReportingMonth as the index
@@ -159,7 +159,7 @@ def automated_forecasts_for_all_types(data, selected_columns, forecast_dates, or
                     customer_forecasts[cons_type] = forecast
                     # Construct a DataFrame to store the forecast results
 
-                    # Prepare data for performance metrics insertion
+                    # Prepare dataset for performance metrics insertion
                     # print("cons_type"+str(cons_type))
                     performance_data[f"RMSE_{cons_type}"] = sarima_rmse
                     performance_data[f"R2_{cons_type}"] = sarmia_r2

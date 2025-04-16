@@ -215,14 +215,14 @@ if len(multiple_customer_ids_list)>0:
     print(f"Future consumption will be predicted for customers:{multiple_customer_ids_list}")
 else:
     # Output the comma-separated IDs
-    print(f"No consumption data available for selected Customer IDs: {multiple_customer_ids_list} or customer ids selection is not successful")
+    print(f"No consumption dataset available for selected Customer IDs: {multiple_customer_ids_list} or customer ids selection is not successful")
 
 # COMMAND ----------
 
 if len(pandas_df) == 0:
-    print("No data found for these customers")
+    print("No dataset found for these customers")
 
-# Find the most recent reporting month in the data, which will be used to determine the starting point for forecasting.
+# Find the most recent reporting month in the dataset, which will be used to determine the starting point for forecasting.
 Actuals_last_date = pandas_df['ReportingMonth'].max()
 forecast_dates = pd.date_range(start=StartDate, end=EndDate, freq='MS')[0:]
 unique_customers = pandas_df['CustomerID'].unique()
