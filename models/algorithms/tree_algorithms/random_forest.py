@@ -1,0 +1,358 @@
+from datetime import datetime
+import os
+from typing import Optional, Any
+
+import joblib
+from sklearn.exceptions import ConvergenceWarning
+from sklearn.pipeline import Pipeline
+from evaluation.performance import *
+import numpy as np
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.model_selection import (
+    StratifiedKFold, GridSearchCV, KFold)
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from sklearn.feature_selection import RFECV
+from sklearn.impute import SimpleImputer
+from sklearn.preprocessing import StandardScaler
+from db.queries import ForecastConfig
+from data.dml import convert_column, create_lag_features, prepare_lag_features, create_month_and_year_columns, \
+    prepare_features_and_target
+from hyperparameters import get_model_hyperparameters, get_pipeline_config, get_cv_config, load_hyperparameter_grid
+from models.algorithms.autoarima import evaluate_predictions
+from models.algorithms.utilities import load_hyperparameter_grid_rf, regressor_grid_for_pipeline, save_best_params_rf, \
+    load_best_params_rf
+from models.base import ForecastModel
+
+# Setup logger with basic configuration
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning, module="joblib._store_backends")
+warnings.filterwarnings("ignore", category=UserWarning, module="joblib.externals.loky.backend.resource_tracker")
+warnings.filterwarnings("ignore", category=ConvergenceWarning)
+
+
+cache_dir = os.path.join(os.getcwd(), 'pipeline_cache')
+memory = joblib.Memory(location=cache_dir, verbose=0)
+
+def most_frequent_params(param_list):
+    """Return the most frequent parameter configuration."""
+    from collections import Counter
+    counter = Counter(tuple(sorted(p.items())) for p in param_list)
+    most_common = counter.most_common(1)[0][0]
+    return dict(most_common)
+
+
+def build_rf_pipeline(random_state: int = 42) -> Pipeline:
+    """
+    Construct a baseline pipeline for Random Forest using external configuration.
+
+    Returns:
+        Pipeline: The constructed pipeline.
+    """
+    pipeline_config = get_pipeline_config("randomforest")
+    imputer_strategy = pipeline_config.get("imputer_strategy", "mean")
+    rfecv_config = pipeline_config.get("rfecv", {"step": 0.1, "cv": 3, "scoring": "neg_mean_absolute_error"})
+
+    pipeline = Pipeline([
+        ('imputer', SimpleImputer(strategy=imputer_strategy)),
+        ('scaler', StandardScaler()),
+        ('feature_selection', RFECV(
+            estimator=RandomForestRegressor(random_state=random_state),
+            step=rfecv_config.get("step", 0.1),
+            cv=rfecv_config.get("cv", 3),
+            scoring=rfecv_config.get("scoring", "neg_mean_absolute_error")
+        )),
+        ('regressor', RandomForestRegressor(random_state=random_state))
+    ])
+    return pipeline
+
+
+def create_inner_cv() -> KFold:
+    """
+    Create a KFold cross-validation object based on the configuration.
+
+    Returns:
+        KFold: The configured KFold cross-validator.
+    """
+    cv_config = get_cv_config()
+    return KFold(
+        n_splits=cv_config.get("n_splits", 3),
+        shuffle=cv_config.get("shuffle", True),
+        random_state=cv_config.get("random_state", 42)
+    )
+
+def random_forest(
+    X: pd.DataFrame,
+    y: pd.Series,
+    mode: str,
+    model_dir: str,
+    consumption_type: str,
+    param_grid: Optional[Dict]=None,
+    scoring: str='neg_mean_absolute_error'
+) -> (Pipeline, pd.Series, Dict[str,float], Dict[str,float]):
+    """
+    1) If mode='validation':
+         - Run nested or single-level cross-validation to find best params.
+         - It picks the best parameters from that single training set, then re-fits on that same set, and calls it a day.
+         - Save best params to disk.
+         - Train final pipeline on sub_train => Forecast on validation => Return metrics.
+    2) If mode='train':
+         - Load best params if present, else default.
+         - Train final pipeline on sub_train+validation => optional check => Save final model.
+    3) If mode='test':
+         - Load best params
+         - Train on sub_train+validation => Forecast on final_test => Return metrics.
+    Returns: (model, forecast, metrics, baseline_metrics)
+    """
+
+    # Early exit if no data
+    if X.empty or y.empty:
+        logging.warning(f"No data for consumption_type={consumption_type}. Skipping.")
+        return None, pd.Series([], dtype=float), {}, {}
+
+    # Create model dir if needed
+    if not os.path.exists(model_dir):
+        os.makedirs(model_dir)
+
+    if mode == 'validation':
+        # 1) Possible load or define parameter grid
+        if param_grid is None:
+            raw_grid = load_hyperparameter_grid_rf(None)
+            param_grid = regressor_grid_for_pipeline(raw_grid)
+
+        # 2) Simple approach: single-level CV or nested. Here we do single-level for brevity.
+        pipeline = build_rf_pipeline()
+        inner_cv = KFold(n_splits=3, shuffle=True, random_state=42)
+
+        grid_search = GridSearchCV(
+            pipeline,
+            param_grid=param_grid,
+            cv=inner_cv,
+            scoring=scoring,
+            n_jobs=-1
+        )
+        grid_search.fit(X, y)
+        best_params = grid_search.best_params_
+
+        # Save best_params to file
+        save_best_params_rf(best_params, model_dir, consumption_type)
+
+        # Evaluate on the same dataset for now (since this is just sub_train or sub_train subset)
+        best_model = grid_search.best_estimator_
+        y_pred = best_model.predict(X)
+        metrics, baseline_metrics = evaluate_predictions(y, y_pred)
+
+        return best_model, pd.Series(y_pred, index=X.index), metrics, baseline_metrics
+    elif mode == 'train':
+        # 1) Load best_params if exist
+        best_params = load_best_params_rf(model_dir, consumption_type)
+        if best_params is None:
+            # Build defaults
+            default_grid = load_hyperparameter_grid_rf(None)
+            default_grid = regressor_grid_for_pipeline(default_grid)
+            # e.g. pick the first in each list
+            best_params = {k: v[0] for k, v in default_grid.items() if k.startswith('regressor__')}
+
+        # 2) Final pipeline, set best params
+        pipeline = build_rf_pipeline()
+        pipeline.set_params(**best_params)
+        pipeline.fit(X, y)
+
+        # 3) Optionally evaluate in-sample
+        y_pred = pipeline.predict(X)
+        metrics, baseline_metrics = evaluate_predictions(y, y_pred)
+
+        # 4) Save final model
+        final_model_path = os.path.join(model_dir, f"{consumption_type}.pkl")
+        metadata = {
+            'timestamp': datetime.now().isoformat(),
+            'hyperparams': best_params
+        }
+        joblib.dump({'model': pipeline, 'metadata': metadata}, final_model_path)
+        logging.info(f"Saved final model to {final_model_path}")
+
+        return pipeline, pd.Series(y_pred, index=X.index), metrics, baseline_metrics
+    elif mode == 'test':
+        # 1) Load best_params
+        best_params = load_best_params_rf(model_dir, consumption_type)
+        if best_params is None:
+            logging.warning("No best params found in test mode. Using default.")
+            best_params = {}
+
+        # 2) Fit pipeline
+        pipeline = build_rf_pipeline()
+        pipeline.set_params(**best_params)
+        pipeline.fit(X, y)
+
+        # 3) Evaluate
+        y_pred = pipeline.predict(X)
+        metrics, baseline_metrics = evaluate_predictions(y, y_pred)
+
+        return pipeline, pd.Series(y_pred, index=X.index), metrics, baseline_metrics
+
+    else:
+        raise ValueError("mode must be one of ['validation', 'train', 'test']")
+
+def train_random_forest_for_podel_id(
+    df: pd.DataFrame,
+    feature_columns: List[str],
+    consumption_types: List[str],
+    ufm_config: ForecastConfig,
+    customer_id: str,
+    pod_id: str,
+    mode: str = 'train',  # 'validation','train','test'
+    param_grid: Optional[Dict] = None
+) -> PodIDPerformanceData:
+    """
+    Simpler function that:
+      1) Loops over each consumption_type.
+      2) Prepares X,y via a helper.
+      3) Calls train_or_validate_rf(...)
+      4) Aggregates results in a PodIDPerformanceData object.
+
+    The entire logic for cross-validation, loading hyperparams, saving final model
+    is inside train_or_validate_rf(...), so we keep this short & modular.
+    """
+
+    logging.info("Random Forest forecasting for Pod=%s, mode=%s", pod_id, mode)
+    metric_keys = {'RMSE', 'MAE', 'R2'}
+    data_rows = []
+
+    # Directory structure for saving/loading
+    model_dir = os.path.join(
+        "model_configuration",
+        ufm_config.forecast_method_name,
+        f"customer_{customer_id}",
+        f"pod_{pod_id}"
+    )
+    os.makedirs(model_dir, exist_ok=True)
+
+    for consumption_type in consumption_types:
+        # Step 1) Prepare the dataset
+        X, y= prepare_features_and_target(df, feature_columns, consumption_type)
+        if X.empty or y.empty:
+            logging.info(f"No data for consumption type = {consumption_type}. Skipping")
+            continue
+
+        # Step 2) Train or Validate or Test
+        model, forecast, metrics, baseline_metrics = random_forest(X, y,
+            mode=mode,
+            model_dir=model_dir,
+            consumption_type=consumption_type,
+            param_grid=param_grid)
+
+        # Step 3) Aggregate results
+        row = {
+            'pod_id': pod_id,
+            'customer_id': customer_id,
+            'consumption_type': consumption_type,
+            'forecast': forecast
+        }
+        for key in metric_keys:
+            row[key] = metrics.get(key, None)
+            row[f"{key}_baseline"] = baseline_metrics.get(key, None)
+
+        data_rows.append(row)
+
+    # Convert to PodIDPerformanceData
+    performance_df = pd.DataFrame(data_rows)
+    pod_performance_data = PodIDPerformanceData(
+        pod_id=pod_id,
+        forecast_method_name=ufm_config.forecast_method_name,
+        customer_id=customer_id,
+        user_forecast_method_id=ufm_config.user_forecast_method_id,
+        performance_data_frame=performance_df
+    )
+    return pod_performance_data
+
+
+def train_random_forest_for_single_customer(model: ForecastModel) -> pd.DataFrame:
+    """
+    Train Random Forest models for a single customer across multiple pods using the given ForecastModel instance.
+
+    This function performs the following steps:
+      1. Extracts required parameters (data, customer id, config, selected columns, consumption types, mode) from the model.
+      2. Sets default values for selected_columns, consumption_types, and lag_features if not already provided.
+      3. Preprocesses the DataFrame by converting date columns and customer IDs.
+      4. Filters the data for the target customer and sorts it by PodID.
+      5. Iterates over each unique pod ID:
+          - Creates lag features and prepares the feature set.
+          - Calls the per-pod training function to obtain performance metrics.
+          - Aggregates results into a performance container.
+      6. Combines and returns the performance results as a long-format DataFrame.
+
+    Args:
+        model (ForecastModel): ForecastModel instance that encapsulates the dataset, configuration,
+                               customer ID, selected columns, consumption types, and mode.
+
+    Returns:
+        pd.DataFrame: Aggregated performance metrics and forecasts for each pod.
+
+    Raises:
+        ValueError: If the dataset is empty or necessary data fields are missing.
+    """
+    df: pd.DataFrame = model.dataset.processed_df
+    # customer_ids, variable_ids = model.dataset.parse_identifiers()
+    # customer_id: str = customer_ids[0]
+    customer_id: str = "5000072536"
+    ufm_config = model.dataset.ufm_config
+    mode: str = model.config.mode
+
+    # Set default feature/consumption columns if not provided.
+    selected_columns: List[str] = model.config.selected_columns if model.config.selected_columns is not None else \
+        ["StandardConsumption", "OffpeakConsumption", "PeakConsumption"]
+    consumption_types: List[str] = model.config.consumption_types if model.config.consumption_types is not None else [
+        "PeakConsumption", "StandardConsumption", "OffPeakConsumption", "Block1Consumption",
+        "Block2Consumption", "Block3Consumption", "Block4Consumption", "NonTOUConsumption"
+    ]
+    lag_features: List[str] = model.config.selected_columns if model.config.selected_columns is not None else ['StandardConsumption']
+
+    logger.info(f"💡 [RF] Starting training for customer {customer_id} in mode '{mode}'.")
+
+    # Retrieve hyperparameters for Random Forest from the config (or defaults).
+    param_grid: Any = get_model_hyperparameters("randomforest", ufm_config.model_parameters)
+    param_grid = regressor_grid_for_pipeline(param_grid)
+    logger.info(f"💡 [RF] Hyperparameters: {param_grid}")
+
+    # Preprocess the DataFrame: set month/year columns and convert customer IDs.
+    df = create_month_and_year_columns(df)
+    customer_data: pd.DataFrame = df[df['CustomerID'] == customer_id].sort_values('PodID')
+    customer_data = convert_column(customer_data)
+
+    # Initialize a container for performance metrics.
+    consumer_performance_data = CustomerPerformanceData(customer_id=customer_id, columns=selected_columns)
+
+    # Determine unique Pod IDs for the customer.
+    unique_pod_ids: List[str] = list(customer_data["PodID"].unique())
+    logger.info(f"📊 [RF] Found {len(unique_pod_ids)} pod(s) for customer {customer_id}.")
+
+    # Process each pod.
+    for pod_id in unique_pod_ids:
+        # Filter pod data and sort by ReportingMonth.
+        podel_df: pd.DataFrame = customer_data[customer_data["PodID"] == pod_id].sort_values('ReportingMonth')
+        podel_df = create_lag_features(podel_df, lag_features, lags=3)
+        podel_df, feature_columns = prepare_lag_features(podel_df, lag_features)
+
+        performance_data = train_random_forest_for_podel_id(
+            podel_df,
+            feature_columns,
+            consumption_types,
+            ufm_config,
+            customer_id,
+            pod_id,
+            mode=mode,
+            param_grid=param_grid
+        )
+        consumer_performance_data.pod_by_id_performance.append(performance_data)
+        logger.info(f"✅ [RF] Processed pod {pod_id} for customer {customer_id}.")
+
+    # Aggregate the per-pod performance results.
+    all_performance_df: pd.DataFrame = consumer_performance_data.get_pod_performance_data()
+    pod_id_performance_data: pd.DataFrame = consumer_performance_data.convert_pod_id_performance_data(
+        all_performance_df)
+    logger.info("✅ [RF] Forecast aggregation complete.")
+    return pod_id_performance_data
