@@ -103,7 +103,6 @@ INNER JOIN
 WHERE  dbt.DatabrickID={databrick_task_id}
 ORDER BY
     dbt.CreationDate
-
 """
 #print(query)
 

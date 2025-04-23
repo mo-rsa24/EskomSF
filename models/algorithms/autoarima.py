@@ -13,6 +13,7 @@ from evaluation.performance import *
 from hyperparameters import get_model_hyperparameters
 from models.base import ForecastModel
 
+
 # Setup logger with basic configuration
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -155,7 +156,6 @@ def forecast_arima_for_single_customer(model: ForecastModel, log: bool = False) 
       3. Iterates over unique pod IDs for the customer.
       4. For each pod, trains a time series model and performs forecasting.
       5. Aggregates the performance metrics into a consolidated DataFrame.
-
     Args:
         model (ForecastModel): An instance of ForecastModel (or subclass) containing all forecasting parameters.
         log (bool, optional): Whether to apply log transformation. Defaults to False.
@@ -167,41 +167,84 @@ def forecast_arima_for_single_customer(model: ForecastModel, log: bool = False) 
     df: pd.DataFrame = model.dataset.processed_df
     # customer_ids, variable_ids = model.dataset.parse_identifiers()
     # customer_id: str = customer_ids[0]
-    customer_id: str = "5000072536"
+    customer_id: str = "7397925811"
     ufm_config = model.dataset.ufm_config
     selected_columns: Optional[List[str]] = model.config.selected_columns
     consumption_types: Optional[List[str]] = model.config.consumption_types
     mode: str = model.config.mode
-
+    log: bool = model.config.log
+    arima = None
     # Extract hyperparameters from the config using our helper
     order, seasonal_order = get_model_hyperparameters(ufm_config.forecast_method_name, ufm_config.model_parameters)
     logger.info(f"💡 Extracted hyperparameters: order={order}, seasonal_order={seasonal_order}")
 
     # Filter the DataFrame for the target customer (assumes a 'CustomerID' column)
     customer_data = df[df['CustomerID'] == customer_id]
-    customer_data = customer_data[customer_data['CustomerID'] == customer_id].sort_values('PodID')
+    customer_data = customer_data.sort_values('PodID')
     if customer_data.empty:
         logger.error(f"🚫 No data for customer {customer_id}. Aborting forecast.")
         raise ValueError(f"Customer {customer_id} not present in the dataset.")
 
     consumer_performance_data = CustomerPerformanceData(customer_id=customer_id, columns=selected_columns)
-
+    arima_rows: List[ModelPodPerformance] = []
     # Process each pod for the customer
     unique_pod_ids: List[str] = list(customer_data["PodID"].unique())
     logger.info(f"📊 Processing {len(unique_pod_ids)} pod(s) for customer {customer_id}.")
-
+    forecast_map: Dict[str, pd.Series] = {}
+    all_forecasts = []
     # Iterate over each unique pod and perform forecasting (pseudo-code shown here)
     for pod_id in unique_pod_ids:
         pod_df = customer_data[customer_data["PodID"] == pod_id].sort_values('ReportingMonth')
+        steps = len(model.dataset.forecast_dates)
         performance_data = forecast_for_podel_id(
             pod_df, order, customer_id, pod_id, consumption_types, ufm_config,
-            mode=mode, seasonal_order=seasonal_order, log=log
+            mode=mode, seasonal_order=seasonal_order, log=log, steps=steps
         )
         consumer_performance_data.pod_by_id_performance.append(performance_data)
+
+        # now convert the long-format DataFrame to a wide row:
+        df_long = performance_data.performance_data_frame
+        wide = finalize_model_performance_df(
+            df_long,
+            model_name=ufm_config.forecast_method_name,
+            databrick_id=getattr(ufm_config, 'databrick_id', None),
+            user_forecast_method_id=ufm_config.user_forecast_method_id
+        )
+        # df_long has columns ['consumption_type','RMSE','R2', ...]
+        metrics: Dict[str, Dict[str, float]] = {
+            row.consumption_type: {"RMSE": row.RMSE, "R2": row.R2}
+            for row in df_long.itertuples(index=False)
+        }
+
+        # --- 2) instantiate the dataclass ---
+        mpp = ModelPodPerformance(
+            ModelName=ufm_config.forecast_method_name,
+            CustomerID=customer_id,
+            PodID=pod_id,
+            DataBrickID=getattr(ufm_config, "databrick_id", None),
+            UserForecastMethodID=ufm_config.user_forecast_method_id,
+            metrics=metrics
+        )
+        arima_rows.append(mpp)
+
+        # Consumption Forecast
+        forecast_map = df_long.set_index("consumption_type")["forecast"].to_dict()
+        forecast_df = build_forecast_df(
+            forecast_map,
+            customer_id,
+            pod_id,
+            list(metrics.keys()),  # exactly the types we have
+            ufm_config.user_forecast_method_id
+        )
+        all_forecasts.append(forecast_df)
+
         logger.info(f"✅ Processed pod {pod_id} for customer {customer_id}.")
 
     all_performance_df: pd.DataFrame = consumer_performance_data.get_pod_performance_data()
+    arima_performance_df = pd.DataFrame([m.to_row() for m in arima_rows])
     final_performance_df = consumer_performance_data.convert_pod_id_performance_data(all_performance_df)
+    forecast_combined_df = pd.concat(all_forecasts, ignore_index=True)
+
     logger.info("✅ Forecast aggregation complete.")
     return final_performance_df
 
@@ -287,6 +330,17 @@ def tune_arima_with_cv(
     logging.info(f"✅ Best ARIMA config: {best_params} with RMSE: {best_score:.2f}")
     return best_params
 
+
+def is_series_valid(series: pd.Series, min_length=30) -> Tuple[bool, str]:
+    if series.nunique() <= 1:
+        return False, "Constant series"
+    if (series == 0).all():
+        return False, "All zeros"
+    if len(series) < min_length:
+        return False, "Too few observations"
+    return True, "Series valid"
+
+
 def forecast_for_podel_id(
         df: pd.DataFrame,
         order: Tuple[int, int, int],
@@ -317,6 +371,8 @@ def forecast_for_podel_id(
     metric_keys = {'RMSE', 'MAE', 'R2'}
     data = []
 
+    forecast_horizon =  get_forecast_range(ufm_config)
+    steps = len(forecast_horizon)
     # Directory structure for saving/loading
     model_dir = f"model_configuration/{ufm_config.forecast_method_name}/customer_{customer_id}/pod_{pod_id}"
     if not os.path.exists(model_dir):
@@ -333,6 +389,23 @@ def forecast_for_podel_id(
 
         # 1) Prepare the time series for this consumption type
         series = prepare_time_series_data(df, consumption_type)
+
+        valid, reason = is_series_valid(series)
+        if not valid:
+            logging.warning(f"Skipping {consumption_type} for pod {pod_id}: {reason}")
+            forecast = pd.Series([0] * steps)  # placeholder forecast
+            metrics = {'RMSE': np.nan, 'MAE': np.nan, 'R2': np.nan}
+            baseline_metrics = {'RMSE': np.nan, 'MAE': np.nan, 'R2': np.nan}
+
+            data.append({
+                'pod_id': pod_id,
+                'customer_id': customer_id,
+                'consumption_type': consumption_type,
+                'forecast': forecast,
+                **{k: metrics[k] for k in metric_keys},
+                **{f'{k}_baseline': baseline_metrics[k] for k in metric_keys}
+            })
+            continue  # Skip to the next consumption type
 
         # 2) Split into sub_train, validation, final_test
         sub_train, validation, final_test = split_time_series_three_way(series)
@@ -369,22 +442,8 @@ def forecast_for_podel_id(
             params_path = os.path.join(model_dir, f"{consumption_type}_params.pkl")
             joblib.dump({'order': best_order, 'seasonal_order': best_seasonal}, params_path)
 
-
-
         elif mode == 'train':
-
-            # -------------------------------
-
-            # After hyperparam selection,
-
-            # we typically train on sub_train + validation
-
-            # Because final_test is strictly for the final step
-
-            # -------------------------------
-
             train_plus_val = pd.concat([sub_train, validation])
-
             # Try loading best hyperparams from validation, if available
             params_path = os.path.join(model_dir, f"{consumption_type}_params.pkl")
 
@@ -400,54 +459,12 @@ def forecast_for_podel_id(
 
             model = fit_arima_model(train_plus_val, best_order, best_seasonal, log=log, save_path=model_path)
 
-            # Typically, we *skip* forecasting in train mode
-
-            # since this is your final training step.
-
-            # But if you want an in-sample check on the last
-
-            # portion of train_plus_val:
-
             if len(validation) > 0:
-
-                # Let's do a small check: forecast exactly len(validation) out-of-sample
-
-                # Because from the model's perspective, after training on train_plus_val,
-
-                # there is no "future" left.
-
-                # So we'd just do an in-sample forecast on the tail if you want.
-
-                # Or skip it entirely.
-
                 tail_forecast = forecast_arima_model(model, best_order, steps=len(validation), seasonal_order=best_seasonal, log=log)
-
                 forecast = tail_forecast
-
                 metrics, baseline_metrics = evaluate_predictions(validation, tail_forecast)
-
-            else:
-
-                # No validation portion, so skip
-
-                pass
-
-
         elif mode == 'test':
-
-            # -------------------------------
-
-            # Evaluate on final_test only
-
-            # Typically you'd load the final model from model_path
-
-            # but here we re-train for demonstration
-
-            # -------------------------------
-
-            # Combine training dataset
             train_plus_val = pd.concat([sub_train, validation])
-
             # Try loading best hyperparams from validation
             params_path = os.path.join(model_dir, f"{consumption_type}_params.pkl")
 
@@ -463,16 +480,17 @@ def forecast_for_podel_id(
 
             # Fit model on entire train+val set
             model = fit_arima_model(train_plus_val, best_order, best_seasonal, log=log)
-
             # Forecast on final test
             if len(final_test) > 0:
                 test_forecast = forecast_arima_model(model, best_order, steps=len(final_test),
                                                      seasonal_order=best_seasonal, log=log)
                 metrics, baseline_metrics = evaluate_predictions(final_test, test_forecast)
-                forecast = test_forecast
             else:
                 logging.warning("⚠️ No final test dataset to evaluate.")
 
+            model = fit_arima_model(series, best_order, best_seasonal, log=log)
+            forecast = forecast_arima_model(model, best_order, steps=steps,
+                                                     seasonal_order=best_seasonal, log=log)
         else:
             raise ValueError("mode must be 'validation', 'train', or 'test'")
 

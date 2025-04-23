@@ -5,6 +5,7 @@ from config_loader import load_config  # your existing config loader module
 from data.dataset import ForecastDataset
 from programs.pipeline import ForecastPipeline
 
+import pandas as pd
 
 def main():
     # Load forecasting configuration (from config.yaml or database)

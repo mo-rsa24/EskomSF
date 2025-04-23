@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import joblib
 import logging
-from typing import Tuple, Optional, Dict
+from typing import Tuple, Optional, Dict, Union
 from statsmodels.tsa.stattools import adfuller
 from statsmodels.tsa.arima.model import ARIMA
 from statsmodels.tsa.statespace.sarimax import SARIMAX
@@ -14,29 +14,110 @@ from sklearn.model_selection import TimeSeriesSplit
 import pmdarima as pm
 
 
-PARAM_GRID = {
-    'n_estimators': [100, 200, 300],
-    'max_features': ['sqrt', 'log2', 0.3],
-    'max_depth': [None, 10, 20],
-    'min_samples_split': [2, 5],
-    'min_samples_leaf': [1, 2],
-    'oob_score': [True],
-    'random_state': [42]
+import logging
+from typing import Dict, Tuple, Union
+
+# The “canonical” RF params and their validation + defaults
+RF_PARAM_NAMES = [
+    "n_estimators",
+    "max_depth",
+    "min_samples_split",
+    "min_samples_leaf",
+    "n_jobs",
+    "bootstrap",
+]
+
+XGB_PARAM_NAMES = [
+    "n_estimators",      # 5.0
+    "max_depth",         # 2.0
+    "learning_rate",     # 0.3
+    "subsample",         # 0.3
+    "colsample_bytree",  # 0.8
+]
+
+PARAM_BOUNDS = {
+    "n_estimators":      lambda v: isinstance(v, int)   and v >= 1,
+    "max_depth":         lambda v: v is None or (isinstance(v, int) and v >= 1),
+    "min_samples_split": lambda v: isinstance(v, int)   and v >= 2,
+    "min_samples_leaf":  lambda v: isinstance(v, int)   and v >= 1,
+    "n_jobs":            lambda v: v is None or v == -1 or (isinstance(v, int) and v >= 1),
+    "bootstrap":         lambda v: isinstance(v, bool),
+}
+DEFAULTS = {
+    "n_estimators":      100,
+    "max_depth":         None,
+    "min_samples_split": 2,
+    "min_samples_leaf":  1,
+    "n_jobs":            None,
+    "bootstrap":         True,
+}
+XGB_PARAM_BOUNDS = {
+    "n_estimators": lambda v: isinstance(v, int) and v >= 1,
+    "max_depth":    lambda v: isinstance(v, int) and v >= 1,
+    "learning_rate":lambda v: 0.0 < v <= 1.0,
+    "subsample":    lambda v: 0.0 < v <= 1.0,
+    "colsample_bytree": lambda v: 0.0 < v <= 1.0,
 }
 
-def regressor_grid_for_pipeline(grid, prefix="regressor__"):
+XGB_DEFAULTS = {
+    "n_estimators": 100,
+    "max_depth": 3,
+    "learning_rate": 0.1,
+    "subsample": 0.8,
+    "colsample_bytree": 0.8,
+}
+
+def regressor_grid_for_pipeline(
+    grid: Union[Dict[str, list], Tuple],
+    prefix: str = "regressor__",
+    param_names: list = None,
+) -> Dict[str, list]:
     """
-    Update the keys of a hyperparameter grid by adding a prefix.
-    This makes the grid compatible with a scikit-learn Pipeline.
+    1) Turn a tuple of 6 values into a dict (zipped against RF_PARAM_NAMES),
+    2) Validate each param (or list of params) against sklearn rules,
+       substituting a default if invalid,
+    3) Prefix every key for Pipeline compatibility.
     """
-    updated_grid = {}
-    for key, value in grid.items():
-        # Add prefix if not already present
-        if not key.startswith(prefix):
-            updated_grid[f"{prefix}{key}"] = value
+    # 1️⃣ If user gave a tuple, map it to a dict first
+    if isinstance(grid, tuple):
+        names = param_names or RF_PARAM_NAMES
+        if len(grid) != len(names):
+            raise ValueError(
+                f"Expected tuple of length {len(names)}, got {len(grid)}"
+            )
+        grid = dict(zip(names, grid))
+
+    # 2️⃣ Validate & possibly substitute defaults
+    validated: Dict[str, list] = {}
+    for key, vals in grid.items():
+        # wrap single values in a list for uniformity
+        values = vals if isinstance(vals, list) else [vals]
+
+        if key in PARAM_BOUNDS:
+            check = PARAM_BOUNDS[key]
+            good = [v for v in values if check(v)]
+            if not good:
+                # nothing valid → fall back to default
+                default = DEFAULTS[key]
+                logging.warning(
+                    f"Parameter '{key}' has no valid values {values}; "
+                    f"resetting to default {default}"
+                )
+                validated[key] = [default]
+            else:
+                validated[key] = good
         else:
-            updated_grid[key] = value
+            # unknown param – pass it through
+            validated[key] = values
+
+    # 3️⃣ Prefix keys
+    updated_grid: Dict[str, list] = {}
+    for key, val_list in validated.items():
+        new_key = key if key.startswith(prefix) else f"{prefix}{key}"
+        updated_grid[new_key] = val_list
+
     return updated_grid
+
 
 def load_hyperparameter_grid_rf(config = None):
     """

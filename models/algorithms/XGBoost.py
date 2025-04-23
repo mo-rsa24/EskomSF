@@ -1,6 +1,6 @@
 from datetime import datetime
 import os
-from typing import List, Any
+from typing import List, Any, Dict, Optional
 
 import joblib
 import logging
@@ -19,10 +19,11 @@ from sklearn.preprocessing import StandardScaler
 from db.queries import ForecastConfig
 from data.dml import convert_column, create_lag_features, prepare_lag_features, create_month_and_year_columns, \
     prepare_features_and_target
-from evaluation.performance import CustomerPerformanceData, PodIDPerformanceData, generate_diagnostics
+from evaluation.performance import CustomerPerformanceData, PodIDPerformanceData, generate_diagnostics, \
+    ModelPodPerformance, build_forecast_df, finalize_model_performance_df
 from hyperparameters import get_model_hyperparameters, get_pipeline_config, get_cv_config, load_hyperparameter_grid
 from models.algorithms.autoarima import evaluate_predictions
-from models.algorithms.utilities import regressor_grid_for_pipeline
+from models.algorithms.utilities import *
 from models.base import ForecastModel
 
 # (Assuming that your utilities.py has been loaded as part of your environment)
@@ -250,7 +251,10 @@ def nested_cv_xgb(X, y, param_grid=None, scoring='neg_mean_absolute_error', perf
 
 # ------------------ Unified XGBoost Forecast Function ------------------
 def xgboost_forecast(X: pd.DataFrame, y: pd.Series, mode: str, model_dir: str, consumption_type: str,
-                     param_grid: dict = None, scoring: str = 'neg_mean_absolute_error'):
+                     param_grid: dict = None, scoring: str = 'neg_mean_absolute_error',
+                    forecast_dates: Optional[pd.DatetimeIndex] = None,
+                    feature_columns: Optional[List[str]] = None
+                     ):
     """
     Depending on the mode, perform:
       - 'validation': Run grid search using cross-validation to tune hyperparameters and save the best.
@@ -291,7 +295,7 @@ def xgboost_forecast(X: pd.DataFrame, y: pd.Series, mode: str, model_dir: str, c
         best_model = grid_search.best_estimator_
         y_pred = best_model.predict(X)
         metrics, baseline_metrics = evaluate_predictions(y, y_pred)
-        return best_model, pd.Series(y_pred, index=X.index), metrics, baseline_metrics
+        return best_model, pd.Series(y_pred, index=X.index), metrics, baseline_metrics, pd.Series(y_pred, index=X.index)
 
     elif mode == 'train':
         best_params = load_best_params_xgb(model_dir, consumption_type)
@@ -304,7 +308,8 @@ def xgboost_forecast(X: pd.DataFrame, y: pd.Series, mode: str, model_dir: str, c
 
         pipeline = build_xgb_pipeline()
         pipeline.set_params(**best_params)
-        pipeline.fit(X, y)
+        pipeline.fit(X, y) # Demonstrate that is sub_train + fake_train
+
         y_pred = pipeline.predict(X)
         metrics, baseline_metrics = evaluate_predictions(y, y_pred)
 
@@ -317,29 +322,68 @@ def xgboost_forecast(X: pd.DataFrame, y: pd.Series, mode: str, model_dir: str, c
         joblib.dump({'model': pipeline, 'metadata': metadata}, final_model_path)
         logging.info(f"Saved final XGBoost model to {final_model_path}")
 
-        return pipeline, pd.Series(y_pred, index=X.index), metrics, baseline_metrics
+        # 3) Future forecast
+        try:
+            future_X = make_future_features(forecast_dates, feature_columns)
+            y_future = pipeline.predict(future_X)
+            future_forecast = pd.Series(y_future, index=forecast_dates)
+        except Exception as e:
+            logging.error(f"Failed to build future features or predict: {e}")
+            future_forecast = pd.Series([], dtype=float)
+
+        return pipeline, pd.Series(y_pred, index=X.index), metrics, baseline_metrics,  future_forecast
+
 
     elif mode == 'test':
-        best_params = load_best_params_xgb(model_dir, consumption_type)
-        if best_params is None:
-            logging.warning("No best params found in test mode. Using default.")
-            best_params = {}
+        best_params = {}
+        # 1) Try loading saved model
+        model_path = os.path.join(model_dir, f"{consumption_type}.pkl")
 
-        pipeline = build_xgb_pipeline()
-        pipeline.set_params(**best_params)
-        pipeline.fit(X, y)
-        y_pred = pipeline.predict(X)
-        metrics, baseline_metrics = evaluate_predictions(y, y_pred)
-        return pipeline, pd.Series(y_pred, index=X.index), metrics, baseline_metrics
+        if os.path.exists(model_path):
+            logging.info(f"🔁 Loading saved RF model for {consumption_type} from {model_path}")
+            saved = joblib.load(model_path)
+            pipeline = saved.get('model', saved)
+        else:
+            logging.warning("No saved model found. Training on full data for test.")
+            best_params = load_best_params_xgb(model_dir, consumption_type)
+            pipeline = build_xgb_pipeline()
+            pipeline.set_params(**best_params)
 
+            pipeline.fit(X, y)
+
+        # 2) In-sample evaluation
+        y_in = pipeline.predict(X)
+        metrics, baseline_metrics = evaluate_predictions(y, y_in)
+
+        # 3) Future forecast
+        try:
+            future_X = make_future_features(forecast_dates, feature_columns)
+            y_future = pipeline.predict(future_X)
+            future_forecast = pd.Series(y_future, index=forecast_dates)
+        except Exception as e:
+            logging.error(f"Failed to build future features or predict: {e}")
+            future_forecast = pd.Series([], dtype=float)
+        return pipeline, pd.Series(y_in, index=X.index), metrics, baseline_metrics, future_forecast
     else:
+
         raise ValueError("mode must be one of ['validation', 'train', 'test']")
 
 
+def make_future_features(
+    forecast_dates: pd.DatetimeIndex,
+    feature_columns: List[str]
+) -> pd.DataFrame:
+    """
+    Build a simplistic feature matrix for future dates.
+    Here we just produce zeros (or you can implement lag-based).
+    """
+    # zero‐fill all features for each future date
+    return pd.DataFrame(0, index=forecast_dates, columns=feature_columns)
 # ------------------ Per-Pod Training ------------------
 def train_forecast_per_pod_xgb(podel_df: pd.DataFrame, customer_id: str, pod_id: str, feature_columns: list,
                                consumption_types: list, ufm_config: ForecastConfig, mode: str = 'train',
-                               param_grid: dict = None):
+                               param_grid: dict = None,
+                               forecast_dates: Optional[pd.DatetimeIndex] = None):
     """
     Train XGBoost models for each consumption type for a given pod.
     This function:
@@ -352,7 +396,7 @@ def train_forecast_per_pod_xgb(podel_df: pd.DataFrame, customer_id: str, pod_id:
     data = []
 
     # Directory structure for saving/loading model_configuration.
-    model_dir = os.path.join("model_configuration", ufm_config.forecast_method_name,
+    model_dir = os.path.join("model_configuration", "XGBoost",
                              f"customer_{customer_id}", f"pod_{pod_id}")
     os.makedirs(model_dir, exist_ok=True)
 
@@ -366,17 +410,21 @@ def train_forecast_per_pod_xgb(podel_df: pd.DataFrame, customer_id: str, pod_id:
             X = podel_df[feature_columns]
             y = podel_df[consumption_type]
 
-            model, y_pred, scores, baseline_metrics = xgboost_forecast(
-                X, y, mode=mode, model_dir=model_dir, consumption_type=consumption_type, param_grid=param_grid
+            model, in_sample_forecast, metrics, baseline_metrics, future_forecast  = xgboost_forecast(
+                X, y, mode=mode, model_dir=model_dir, consumption_type=consumption_type, param_grid=param_grid,
+                forecast_dates=forecast_dates,
+                feature_columns=feature_columns
             )
+            # Step 3) Aggregate results
             row = {
                 'pod_id': pod_id,
                 'customer_id': customer_id,
                 'consumption_type': consumption_type,
-                'forecast': y_pred
+                'in_sample_forecast': in_sample_forecast,
+                'forecast': future_forecast
             }
             for key in metric_keys:
-                row[key] = scores.get(key, None)
+                row[key] = metrics.get(key, None)
                 row[f"{key}_baseline"] = baseline_metrics.get(key, None)
 
             data.append(row)
@@ -393,7 +441,7 @@ def train_forecast_per_pod_xgb(podel_df: pd.DataFrame, customer_id: str, pod_id:
             logging.exception(f"Error during training for POD {pod_id}, Consumption Type {consumption_type}: {e}")
 
     performance_data_frame = pd.DataFrame(data)
-    pod_id_performance_data = PodIDPerformanceData(pod_id, ufm_config.forecast_method_name, customer_id,
+    pod_id_performance_data = PodIDPerformanceData(pod_id, "XGBoost", customer_id,
                                                    ufm_config.user_forecast_method_id, performance_data_frame)
     return pod_id_performance_data
 
@@ -428,30 +476,33 @@ def train_xgboost_for_single_customer(model: ForecastModel) -> pd.DataFrame:
     """
     # Extract required attributes from the model object.
     df: pd.DataFrame = model.dataset.processed_df
-    customer_id: str = model.dataset.customer_ids[0]  # Aiming to select many
-    ufm_config: Any = model.config
+    customer_id: str = "8460296087"
+    ufm_config = model.dataset.ufm_config
     mode: str = model.config.mode
 
 
 
     # Set defaults if not provided.
-    selected_columns: List[str] = model.selected_columns if model.selected_columns is not None else \
+    selected_columns: List[str] = model.config.selected_columns if model.config.selected_columns is not None else \
         ["StandardConsumption", "OffpeakConsumption", "PeakConsumption"]
-    consumption_types: List[str] = model.consumption_types if model.consumption_types is not None else [
+    consumption_types: List[str] = model.config.consumption_types if model.config.consumption_types is not None else [
         "PeakConsumption", "StandardConsumption", "OffPeakConsumption", "Block1Consumption",
         "Block2Consumption", "Block3Consumption", "Block4Consumption", "NonTOUConsumption"
     ]
-    lag_features: List[str] = model.selected_columns if model.selected_columns is not None else ['StandardConsumption']
+    lag_features: List[str] = model.config.selected_columns if model.config.selected_columns is not None else ['StandardConsumption']
 
     logger.info(f"🚀 [XGBoost] Starting training for customer {customer_id} in mode '{mode}'.")
 
     # Extract or default hyperparameters using our centralized helper.
 
+    # param_grid: Any = get_model_hyperparameters("xgboost", ufm_config.model_parameters)
     param_grid: Any = get_model_hyperparameters("xgboost", ufm_config.model_parameters)
-    grid = load_hyperparameter_grid("xgboost")
-    # Optionally, convert grid with your helper regressor_grid_for_pipeline:
-    param_grid = regressor_grid_for_pipeline(grid)
-    logger.info(f"💡 [XGBoost] Hyperparameters extracted: {param_grid}")
+    param_grid = regressor_grid_for_pipeline(
+        param_grid,
+        prefix="regressor__",
+        param_names=XGB_PARAM_NAMES  # <-- override RF_PARAM_NAMES
+    )
+    logger.info(f"💡 [XGBoost] Hyperparameters: {param_grid}")
 
     # Preprocess the DataFrame:
     df = create_month_and_year_columns(df)
@@ -459,11 +510,14 @@ def train_xgboost_for_single_customer(model: ForecastModel) -> pd.DataFrame:
     customer_data = convert_column(customer_data)
 
     # Initialize a performance container.
-    consumer_perf = CustomerPerformanceData(customer_id=customer_id, columns=selected_columns)
+    consumer_performance_data = CustomerPerformanceData(customer_id=customer_id, columns=selected_columns)
 
     unique_pod_ids: List[str] = list(customer_data["PodID"].unique())
     logger.info(f"📊 [XGBoost] Found {len(unique_pod_ids)} pod(s) for customer {customer_id}.")
 
+    forecast_map: Dict[str, pd.Series] = {}
+    all_forecasts = []
+    xgboost_rows: List[ModelPodPerformance] = []
     for pod_id in unique_pod_ids:
         pod_df: pd.DataFrame = customer_data[customer_data["PodID"] == pod_id].sort_values('ReportingMonth')
         pod_df = create_lag_features(pod_df, lag_features, lags=3)
@@ -471,13 +525,52 @@ def train_xgboost_for_single_customer(model: ForecastModel) -> pd.DataFrame:
 
         performance_data = train_forecast_per_pod_xgb(
             pod_df, customer_id, pod_id, feature_columns, consumption_types, ufm_config, mode=mode,
-            param_grid=param_grid
+            param_grid=param_grid, forecast_dates=model.dataset.forecast_dates
         )
-        consumer_perf.pod_by_id_performance.append(performance_data)
-        logger.info(f"✅ [XGBoost] Processed pod {pod_id}.")
+        consumer_performance_data.pod_by_id_performance.append(performance_data)
+        # now convert the long-format DataFrame to a wide row:
+        df_long = performance_data.performance_data_frame
+        wide = finalize_model_performance_df(
+            df_long,
+            model_name=ufm_config.forecast_method_name,
+            databrick_id=getattr(ufm_config, 'databrick_id', None),
+            user_forecast_method_id=ufm_config.user_forecast_method_id
+        )
+        # df_long has columns ['consumption_type','RMSE','R2', ...]
+        metrics: Dict[str, Dict[str, float]] = {
+            row.consumption_type: {"RMSE": row.RMSE, "R2": row.R2}
+            for row in df_long.itertuples(index=False)
+        }
+
+        # --- 2) instantiate the dataclass ---
+        mpp = ModelPodPerformance(
+            ModelName=ufm_config.forecast_method_name,
+            CustomerID=customer_id,
+            PodID=pod_id,
+            DataBrickID=getattr(ufm_config, "databrick_id", None),
+            UserForecastMethodID=ufm_config.user_forecast_method_id,
+            metrics=metrics
+        )
+        xgboost_rows.append(mpp)
+
+        # Consumption Forecast
+        forecast_map = df_long.set_index("consumption_type")["forecast"].to_dict()
+        forecast_df = build_forecast_df(
+            forecast_map,
+            customer_id,
+            pod_id,
+            list(metrics.keys()),  # exactly the types we have
+            ufm_config.user_forecast_method_id
+        )
+        all_forecasts.append(forecast_df)
+        logger.info(f"✅ [XGBoost] Processed pod {pod_id} for customer {customer_id}.")
 
     # Aggregate performance results.
-    all_perf_df: pd.DataFrame = consumer_perf.get_pod_performance_data()
-    aggregated_perf_df: pd.DataFrame = consumer_perf.convert_pod_id_performance_data(all_perf_df)
+    all_performance_df: pd.DataFrame = consumer_performance_data.get_pod_performance_data()
+    xgboost_rows_performance_df = pd.DataFrame([m.to_row() for m in xgboost_rows])
+    final_performance_df = consumer_performance_data.convert_pod_id_performance_data(all_performance_df)
+    forecast_combined_df = pd.concat(all_forecasts, ignore_index=True)
+    pod_id_performance_data: pd.DataFrame = consumer_performance_data.convert_pod_id_performance_data(
+        all_performance_df)
     logger.info("✅ [XGBoost] Forecast aggregation complete.")
-    return aggregated_perf_df
+    return pod_id_performance_data

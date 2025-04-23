@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 import numpy as np
-from typing import Dict, List
+from typing import Dict, List, Optional, Union, Any
 import shap
 from sklearn.inspection import permutation_importance, PartialDependenceDisplay
 import pandas as pd
@@ -25,6 +25,189 @@ class PerformanceData:
             key = f'{metric}_{consumption_type}_{alternative}' if consumption_type is not None else f'{metric}'
             self.metrics[key] = value
 
+@dataclass
+class ModelPodPerformance:
+    ModelName: str
+    CustomerID: str
+    PodID: str
+    DataBrickID: Optional[int]
+    UserForecastMethodID: int
+    # A mapping from consumption_type -> {'RMSE': float, 'R2': float}
+    metrics: Dict[str, Dict[str, float]] = field(default_factory=dict)
+
+    def to_row(self) -> Dict[str, Any]:
+        """
+        Flatten this dataclass into a single dict suitable for pd.DataFrame:
+          - metadata fields as‐is
+          - dynamic RMSE_<type> and R2_<type> columns
+          - RMSE_Avg and R2_Avg over the values present
+        """
+        row = {
+            "ModelName":             self.ModelName,
+            "CustomerID":            self.CustomerID,
+            "PodID":                 self.PodID,
+            "DataBrickID":           self.DataBrickID,
+            "UserForecastMethodID":  self.UserForecastMethodID,
+        }
+
+        # Insert per‐type metrics
+        rmse_vals, r2_vals = [], []
+        for ctype, m in self.metrics.items():
+            rmse = m.get("RMSE")
+            r2   = m.get("R2")
+            row[f"RMSE_{ctype}"] = rmse
+            row[f"R2_{ctype}"]   = r2
+            if rmse is not None: rmse_vals.append(rmse)
+            if r2   is not None: r2_vals.append(r2)
+
+        # Averages
+        row["RMSE_Avg"] = sum(rmse_vals) / len(rmse_vals) if rmse_vals else None
+        row["R2_Avg"]   = sum(r2_vals)   / len(r2_vals)   if r2_vals   else None
+
+        return row
+
+import pandas as pd
+from typing import Optional, List
+
+def finalize_model_performance_df(
+    df_long: pd.DataFrame,
+    model_name: str,
+    databrick_id: Optional[int],
+    user_forecast_method_id: int,
+    consumption_order: Optional[List[str]] = None
+) -> pd.DataFrame:
+    """
+    Pivot a long-format performance DataFrame into a wide schema matching example.csv,
+    dynamically creating columns only for consumption types present in df_long.
+
+    Parameters:
+    - df_long: DataFrame with columns ['pod_id','customer_id','consumption_type','RMSE','R2',...]
+    - model_name: name of the forecasting model
+    - databrick_id: optional DataBrick warehouse/SQL endpoint ID
+    - user_forecast_method_id: ID of the user forecast method
+    - consumption_order: optional list defining desired column order for consumption types;
+        if None, uses the unique order in df_long.
+
+    Returns:
+    - A DataFrame with columns in the order:
+      [ModelName, CustomerID, PodID, DataBrickID, UserForecastMethodID,
+       RMSE_<ctype> and R2_<ctype> for each ctype in consumption_order or present,
+       RMSE_Avg, R2_Avg]
+    """
+    # Determine which consumption types to include
+    present = list(df_long['consumption_type'].unique())
+    if consumption_order:
+        # respect provided order, but only include those present
+        types = [ct for ct in consumption_order if ct in present]
+    else:
+        types = present
+
+    # Pivot RMSE and R2 into wide format
+    pivot = df_long.pivot_table(
+        index=['pod_id', 'customer_id'],
+        columns='consumption_type',
+        values=['RMSE', 'R2'],
+        aggfunc='first'
+    )
+    # Flatten column MultiIndex: ('RMSE','PeakConsumption') -> 'RMSE_PeakConsumption'
+    pivot.columns = [f"{metric}_{ctype}" for metric, ctype in pivot.columns]
+    pivot = pivot.reset_index()
+
+    # Compute average metrics
+    rmse_cols = [f"RMSE_{ct}" for ct in types]
+    r2_cols   = [f"R2_{ct}"   for ct in types]
+    if rmse_cols:
+        pivot['RMSE_Avg'] = pivot[rmse_cols].mean(axis=1)
+    else:
+        pivot['RMSE_Avg'] = pd.NA
+    if r2_cols:
+        pivot['R2_Avg']   = pivot[r2_cols].mean(axis=1)
+    else:
+        pivot['R2_Avg'] = pd.NA
+
+    # Add metadata columns
+    pivot['ModelName']           = model_name
+    pivot['DataBrickID']         = databrick_id
+    pivot['UserForecastMethodID'] = user_forecast_method_id
+
+    # Rename index columns to match example.csv
+    pivot.rename(
+        columns={'customer_id': 'CustomerID', 'pod_id': 'PodID'},
+        inplace=True
+    )
+
+    # Build final column order
+    column_order = [
+        'ModelName', 'CustomerID', 'PodID', 'DataBrickID', 'UserForecastMethodID',
+    ] + rmse_cols + r2_cols + ['RMSE_Avg', 'R2_Avg']
+
+    # Filter out any missing columns (in case some types were absent)
+    column_order = [c for c in column_order if c in pivot.columns]
+
+    # Reindex and reset index
+    result = pivot[column_order].copy()
+    result.reset_index(drop=True, inplace=True)
+    return result
+
+
+import pandas as pd
+from typing import Dict, List, Any, Union
+
+def build_forecast_df(
+    forecast_map: Dict[str, pd.Series],
+    customer_id: str,
+    pod_id: str,
+    cons_types: List[str],
+    user_forecast_method_id: int
+) -> pd.DataFrame:
+    """
+    Build the per-pod forecast DataFrame by inferring the date axis
+    directly from the first Series in forecast_map.
+
+    Parameters:
+    - forecast_map: mapping from consumption_type to pd.Series (indexed by date)
+    - customer_id, pod_id: identifiers to stamp on every row
+    - cons_types: list of all consumption types (columns) you expect
+    - user_forecast_method_id: UFMID to attach
+
+    Returns a DataFrame with columns:
+      ['ForecastDate','CustomerID','PodID', *cons_types, 'UserForecastMethodID']
+    """
+    if not forecast_map:
+        raise ValueError("forecast_map is empty — nothing to build dates from.")
+
+    # 1) Derive the date axis from any one of the series
+    first_series = next(iter(forecast_map.values()))
+    forecast_dates = list(first_series.index)
+    n_periods = len(forecast_dates)
+
+    # 2) Seed your dict with the metadata columns
+    data: Dict[str, Union[List[Any], pd.Series]] = {
+        "ReportingMonth": forecast_dates,
+        "CustomerID":   [customer_id] * n_periods,
+        "PodID":        [pod_id]      * n_periods,
+    }
+
+    # 3) Fill in each consumption column
+    for ct in cons_types:
+        ser = forecast_map.get(ct)
+        if isinstance(ser, pd.Series):
+            data[ct] = list(ser.values)
+        else:
+            data[ct] = [None] * n_periods
+
+    # 4) Build the DataFrame
+    df = pd.DataFrame(data)
+
+    # 5) Round the consumption columns and fill missing with zero
+    for ct in cons_types:
+        if ct in df.columns:
+            df[ct] = df[ct].fillna(0).round(2)
+
+    # 6) Attach the UFMID
+    df["UserForecastMethodID"] = user_forecast_method_id
+
+    return df
 
 @dataclass
 class PodIDPerformanceData:

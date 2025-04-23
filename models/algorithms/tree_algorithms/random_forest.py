@@ -92,7 +92,9 @@ def random_forest(
     model_dir: str,
     consumption_type: str,
     param_grid: Optional[Dict]=None,
-    scoring: str='neg_mean_absolute_error'
+    scoring: str='neg_mean_absolute_error',
+    forecast_dates: Optional[pd.DatetimeIndex] = None,
+    feature_columns: Optional[List[str]] = None
 ) -> (Pipeline, pd.Series, Dict[str,float], Dict[str,float]):
     """
     1) If mode='validation':
@@ -146,7 +148,7 @@ def random_forest(
         y_pred = best_model.predict(X)
         metrics, baseline_metrics = evaluate_predictions(y, y_pred)
 
-        return best_model, pd.Series(y_pred, index=X.index), metrics, baseline_metrics
+        return best_model, pd.Series(y_pred, index=X.index), metrics, baseline_metrics, pd.Series([], dtype=float)
     elif mode == 'train':
         # 1) Load best_params if exist
         best_params = load_best_params_rf(model_dir, consumption_type)
@@ -175,25 +177,38 @@ def random_forest(
         joblib.dump({'model': pipeline, 'metadata': metadata}, final_model_path)
         logging.info(f"Saved final model to {final_model_path}")
 
-        return pipeline, pd.Series(y_pred, index=X.index), metrics, baseline_metrics
+        return pipeline, pd.Series(y_pred, index=X.index), metrics, baseline_metrics, pd.Series([], dtype=float)
     elif mode == 'test':
         # 1) Load best_params
-        best_params = load_best_params_rf(model_dir, consumption_type)
-        if best_params is None:
-            logging.warning("No best params found in test mode. Using default.")
-            best_params = {}
+        best_params ={}
+        # 1) Try loading saved model
+        model_path = os.path.join(model_dir, f"{consumption_type}.pkl")
+        if os.path.exists(model_path):
+            logging.info(f"🔁 Loading saved RF model for {consumption_type} from {model_path}")
+            saved = joblib.load(model_path)
+            pipeline = saved.get('model', saved)
+        else:
+            # fallback: train on full data
+            logging.warning("No saved model found. Training on full data for test.")
+            best_params = load_best_params_rf(model_dir, consumption_type)
+            pipeline = build_rf_pipeline()
+            pipeline.set_params(**best_params)
+            pipeline.fit(X, y)
 
-        # 2) Fit pipeline
-        pipeline = build_rf_pipeline()
-        pipeline.set_params(**best_params)
-        pipeline.fit(X, y)
+        # 2) In-sample evaluation
+        y_in = pipeline.predict(X)
+        metrics, baseline_metrics = evaluate_predictions(y, y_in)
 
-        # 3) Evaluate
-        y_pred = pipeline.predict(X)
-        metrics, baseline_metrics = evaluate_predictions(y, y_pred)
+        # 3) Future forecast
+        try:
+            future_X = make_future_features(forecast_dates, feature_columns)
+            y_future = pipeline.predict(future_X)
+            future_forecast = pd.Series(y_future, index=forecast_dates)
+        except Exception as e:
+            logging.error(f"Failed to build future features or predict: {e}")
+            future_forecast = pd.Series([], dtype=float)
 
-        return pipeline, pd.Series(y_pred, index=X.index), metrics, baseline_metrics
-
+        return pipeline, pd.Series(y_in, index=X.index), metrics, baseline_metrics, future_forecast
     else:
         raise ValueError("mode must be one of ['validation', 'train', 'test']")
 
@@ -205,7 +220,8 @@ def train_random_forest_for_podel_id(
     customer_id: str,
     pod_id: str,
     mode: str = 'train',  # 'validation','train','test'
-    param_grid: Optional[Dict] = None
+    param_grid: Optional[Dict] = None,
+    forecast_dates: Optional[pd.DatetimeIndex] = None  # <-- ADD THIS
 ) -> PodIDPerformanceData:
     """
     Simpler function that:
@@ -239,18 +255,21 @@ def train_random_forest_for_podel_id(
             continue
 
         # Step 2) Train or Validate or Test
-        model, forecast, metrics, baseline_metrics = random_forest(X, y,
+        model, in_sample_forecast, metrics, baseline_metrics, future_forecast = random_forest(X, y,
             mode=mode,
             model_dir=model_dir,
             consumption_type=consumption_type,
-            param_grid=param_grid)
+            param_grid=param_grid,
+            forecast_dates=forecast_dates,
+            feature_columns=feature_columns)
 
         # Step 3) Aggregate results
         row = {
             'pod_id': pod_id,
             'customer_id': customer_id,
             'consumption_type': consumption_type,
-            'forecast': forecast
+            'in_sample_forecast': in_sample_forecast,
+            'forecast': future_forecast
         }
         for key in metric_keys:
             row[key] = metrics.get(key, None)
@@ -268,6 +287,19 @@ def train_random_forest_for_podel_id(
         performance_data_frame=performance_df
     )
     return pod_performance_data
+
+# Add near top of random_forest.py:
+
+def make_future_features(
+    forecast_dates: pd.DatetimeIndex,
+    feature_columns: List[str]
+) -> pd.DataFrame:
+    """
+    Build a simplistic feature matrix for future dates.
+    Here we just produce zeros (or you can implement lag-based).
+    """
+    # zero‐fill all features for each future date
+    return pd.DataFrame(0, index=forecast_dates, columns=feature_columns)
 
 
 def train_random_forest_for_single_customer(model: ForecastModel) -> pd.DataFrame:
@@ -298,7 +330,7 @@ def train_random_forest_for_single_customer(model: ForecastModel) -> pd.DataFram
     df: pd.DataFrame = model.dataset.processed_df
     # customer_ids, variable_ids = model.dataset.parse_identifiers()
     # customer_id: str = customer_ids[0]
-    customer_id: str = "5000072536"
+    customer_id: str = "6632769797"
     ufm_config = model.dataset.ufm_config
     mode: str = model.config.mode
 
@@ -330,6 +362,9 @@ def train_random_forest_for_single_customer(model: ForecastModel) -> pd.DataFram
     unique_pod_ids: List[str] = list(customer_data["PodID"].unique())
     logger.info(f"📊 [RF] Found {len(unique_pod_ids)} pod(s) for customer {customer_id}.")
 
+    forecast_map: Dict[str, pd.Series] = {}
+    all_forecasts = []
+    random_forest_rows: List[ModelPodPerformance] = []
     # Process each pod.
     for pod_id in unique_pod_ids:
         # Filter pod data and sort by ReportingMonth.
@@ -345,13 +380,53 @@ def train_random_forest_for_single_customer(model: ForecastModel) -> pd.DataFram
             customer_id,
             pod_id,
             mode=mode,
-            param_grid=param_grid
+            param_grid=param_grid,
+            forecast_dates=model.dataset.forecast_dates
         )
         consumer_performance_data.pod_by_id_performance.append(performance_data)
+
+        # now convert the long-format DataFrame to a wide row:
+        df_long = performance_data.performance_data_frame
+        wide = finalize_model_performance_df(
+            df_long,
+            model_name=ufm_config.forecast_method_name,
+            databrick_id=getattr(ufm_config, 'databrick_id', None),
+            user_forecast_method_id=ufm_config.user_forecast_method_id
+        )
+        # df_long has columns ['consumption_type','RMSE','R2', ...]
+        metrics: Dict[str, Dict[str, float]] = {
+            row.consumption_type: {"RMSE": row.RMSE, "R2": row.R2}
+            for row in df_long.itertuples(index=False)
+        }
+
+        # --- 2) instantiate the dataclass ---
+        mpp = ModelPodPerformance(
+            ModelName=ufm_config.forecast_method_name,
+            CustomerID=customer_id,
+            PodID=pod_id,
+            DataBrickID=getattr(ufm_config, "databrick_id", None),
+            UserForecastMethodID=ufm_config.user_forecast_method_id,
+            metrics=metrics
+        )
+        random_forest_rows.append(mpp)
+
+        # Consumption Forecast
+        forecast_map = df_long.set_index("consumption_type")["forecast"].to_dict()
+        forecast_df = build_forecast_df(
+            forecast_map,
+            customer_id,
+            pod_id,
+            list(metrics.keys()),  # exactly the types we have
+            ufm_config.user_forecast_method_id
+        )
+        all_forecasts.append(forecast_df)
         logger.info(f"✅ [RF] Processed pod {pod_id} for customer {customer_id}.")
 
     # Aggregate the per-pod performance results.
     all_performance_df: pd.DataFrame = consumer_performance_data.get_pod_performance_data()
+    random_forest_rows_performance_df = pd.DataFrame([m.to_row() for m in random_forest_rows])
+    final_performance_df = consumer_performance_data.convert_pod_id_performance_data(all_performance_df)
+    forecast_combined_df = pd.concat(all_forecasts, ignore_index=True)
     pod_id_performance_data: pd.DataFrame = consumer_performance_data.convert_pod_id_performance_data(
         all_performance_df)
     logger.info("✅ [RF] Forecast aggregation complete.")
