@@ -24,6 +24,7 @@ class PerformanceData:
         else:
             key = f'{metric}_{consumption_type}_{alternative}' if consumption_type is not None else f'{metric}'
             self.metrics[key] = value
+import math
 
 @dataclass
 class ModelPodPerformance:
@@ -40,31 +41,40 @@ class ModelPodPerformance:
         Flatten this dataclass into a single dict suitable for pd.DataFrame:
           - metadata fields as‐is
           - dynamic RMSE_<type> and R2_<type> columns
-          - RMSE_Avg and R2_Avg over the values present
+          - RMSE_Avg and R2_Avg over the values present (appear first)
         """
-        row = {
-            "ModelName":             self.ModelName,
-            "CustomerID":            self.CustomerID,
-            "PodID":                 self.PodID,
-            "DataBrickID":           self.DataBrickID,
-            "UserForecastMethodID":  self.UserForecastMethodID,
-        }
-
-        # Insert per‐type metrics
+        # First calculate averages
         rmse_vals, r2_vals = [], []
+        metrics_fields = {}
         for ctype, m in self.metrics.items():
             rmse = m.get("RMSE")
-            r2   = m.get("R2")
-            row[f"RMSE_{ctype}"] = rmse
-            row[f"R2_{ctype}"]   = r2
-            if rmse is not None: rmse_vals.append(rmse)
-            if r2   is not None: r2_vals.append(r2)
+            r2 = m.get("R2")
+            metrics_fields[f"RMSE_{ctype}"] = rmse
+            metrics_fields[f"R2_{ctype}"] = r2
+            if rmse is not None and not math.isnan(rmse):
+                rmse_vals.append(rmse)
+            if r2 is not None and not math.isnan(r2):
+                r2_vals.append(r2)
 
-        # Averages
-        row["RMSE_Avg"] = sum(rmse_vals) / len(rmse_vals) if rmse_vals else None
-        row["R2_Avg"]   = sum(r2_vals)   / len(r2_vals)   if r2_vals   else None
+        rmse_avg = sum(rmse_vals) / len(rmse_vals) if rmse_vals else None
+        r2_avg = sum(r2_vals) / len(r2_vals) if r2_vals else None
+
+        # Now build the dict with desired order
+        row = {
+            "CustomerID": self.CustomerID,
+            "PodID": self.PodID,
+            "DataBrickID": self.DataBrickID,
+            "UserForecastMethodID": self.UserForecastMethodID,
+            "ModelName": self.ModelName,
+            "RMSE_Avg": rmse_avg,
+            "R2_Avg": r2_avg,
+        }
+
+        # Append the dynamic metric fields at the end
+        row.update(metrics_fields)
 
         return row
+
 
 import pandas as pd
 from typing import Optional, List
@@ -183,9 +193,10 @@ def build_forecast_df(
 
     # 2) Seed your dict with the metadata columns
     data: Dict[str, Union[List[Any], pd.Series]] = {
+        "PodID": [pod_id] * n_periods,
+        "UserForecastMethodID": [user_forecast_method_id] * n_periods,
+        "CustomerID": [customer_id] * n_periods,
         "ReportingMonth": forecast_dates,
-        "CustomerID":   [customer_id] * n_periods,
-        "PodID":        [pod_id]      * n_periods,
     }
 
     # 3) Fill in each consumption column
@@ -199,13 +210,11 @@ def build_forecast_df(
     # 4) Build the DataFrame
     df = pd.DataFrame(data)
 
+    df['CustomerID'] = df['CustomerID'].astype('int64')
     # 5) Round the consumption columns and fill missing with zero
     for ct in cons_types:
         if ct in df.columns:
             df[ct] = df[ct].fillna(0).round(2)
-
-    # 6) Attach the UFMID
-    df["UserForecastMethodID"] = user_forecast_method_id
 
     return df
 

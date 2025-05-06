@@ -1,9 +1,20 @@
 # config.yaml
 
 debug: true
-visualize: false
+visualize: true
+
+# Feature toggle for SARIMAX with exogenous variables
+use_feature_engineering: true
+lag_hours: [168, 336, 504, 672]
+train_mode: recursive
+fail_on_invalid_lags: false
+use_extended_calendar_features: true
+add_calendar_features: true
+
 user: "fortrackSQL"
 password: "vuxpapyvu@2024"
+write_url: "jdbc:sqlserver://fortrack-maz-sdb-san-dev-01.database.windows.net;databaseName=FortrackDB"
+driver: "com.microsoft.sqlserver.jdbc.SQLServerDriver"
 DEV:
   server: "jdbc:sqlserver://fortrack-maz-sdb-san-dev-01.database.windows.net"
   database: "FortrackDB"
@@ -12,9 +23,18 @@ QA:
   database: "FortrackDB"
 
 
+# Read data from SQL Server
+tables:
+  table_DBT: "dbo.DataBrickTasks"
+  table_UFM: "dbo.UserForecastMethod"
+  table_actual: "dbo.ActualData"
+  table_version: "dbo.DimVersion"
+  table_forecast: "dw.ForecastActive"
+  performance_metrics_table: "dbo.StatisticalPerformanceMetrics"
+  target_table_name: "dbo.ForecastFact"
 
-#selected_columns: ["PeakConsumption","StandardConsumption","OffPeakConsumption"]
-selected_columns: ["OffPeakConsumption","PeakConsumption","StandardConsumption","Block1Consumption","Block2Consumption","Block3Consumption","Block4Consumption","NonTOUConsumption"]
+
+selected_columns: ["PeakConsumption","StandardConsumption","OffPeakConsumption"]
 consumption_types: ["OffPeakConsumption","PeakConsumption","StandardConsumption","Block1Consumption","Block2Consumption","Block3Consumption","Block4Consumption","NonTOUConsumption"]
 mode: "train"
 log: true

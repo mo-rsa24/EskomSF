@@ -31,10 +31,12 @@ def load_and_prepare_data(ufm_config: ForecastConfig, rows: int = 5000, actual: 
         A prepared DataFrame ready for use in predictive models.
     """
     environment = os.getenv("ENV")
+    path = f"dataset/{environment}"
+    os.makedirs(path, exist_ok=True)
     if actual:
-        csv = f"dataset/{environment}/ActualData{ufm_config.forecast_method_name}.csv"
+        csv = f"{path}/ActualData{ufm_config.forecast_method_name}.csv"
     else:
-        csv = f"dataset/{environment}/PredictiveInputData{ufm_config.forecast_method_name}.csv"
+        csv = f"{path}/PredictiveInputData{ufm_config.forecast_method_name}.csv"
     if not os.path.isfile(csv):
         logging.info(f"📥 Fetching dataset using get_predictive_data with UFMID={ufm_config.user_forecast_method_id}")
         if actual:
@@ -52,6 +54,9 @@ def load_and_prepare_data(ufm_config: ForecastConfig, rows: int = 5000, actual: 
     # Type conversion
     df['CustomerID'] = df['CustomerID'].astype(str)
     logging.info("🔄 Converted 'CustomerID' to string.")
+
+    df['PodID'] = df['PodID'].astype(str)
+    logging.info("🔄 Converted 'PodID' to string.")
 
     # Sorting
     df = df.sort_values(by=["PodID", "ReportingMonth"])
@@ -171,13 +176,13 @@ def extract_sarimax_params(param_str: str) -> Tuple[Tuple[int, int, int], Tuple[
         logging.error(f"❌ Failed to parse model parameters: {e}")
         return (0, 0, 0), (0, 0, 0, 0)
 
-def get_single_time_series_for_single_customer(df, column: str='CustomerID') -> tuple[Any, Any, Any]:
+def get_single_time_series_for_single_customer(df, column: str='PeakConsumption') -> tuple[Any, Any, Any]:
     # Prepare dataset for a single customer to perform time series diagnostics
     df = df.reset_index()
     single_customer = df['CustomerID'].value_counts().idxmax()
     cust_df = df[df['CustomerID'] == single_customer].sort_values('ReportingMonth')
     # Select a single time series (e.g., PeakConsumption)
-    ts = cust_df.set_index('ReportingMonth')['PeakConsumption']
+    ts = cust_df.set_index('ReportingMonth')[column]
     return ts, single_customer, cust_df
 
 
@@ -292,7 +297,7 @@ def split_time_series_three_ways(index: pd.Index,
     return sub_train_idx, val_idx, final_test_idx
 
 
-def prepare_lag_features(df, lag_columns = None, lags=3, base_features=None):
+def  prepare_lag_features(df, lag_columns = None, lags=3, base_features=None):
     """
     Create lag features for the specified columns, convert them to numeric,
     and construct a final list of feature columns.
