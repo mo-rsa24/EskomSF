@@ -5,8 +5,6 @@ from db.queries import get_sample_rows, get_user_forecast_data, row_to_config
 import os
 from etl.etl import *
 from data.dml import *
-os.environ["ENV"] = "DEV"
-
 ufm_df = get_user_forecast_data()
 
 all_prediction_columns = ["PeakConsumption", "StandardConsumption", "OffPeakConsumption","Block1Consumption", "Block2Consumption","Block3Consumption", "Block4Consumption",     "NonTOUConsumption"]
@@ -29,7 +27,7 @@ if selected_columns:
 else:
     logging.error("No matching columns found in AllVariables")
 
-df = load_and_prepare_data("PredictiveInputDataARIMA.csv")
+df = load_and_prepare_data("PredictiveInputDataARIMA_.csv")
 
 row = ufm_df.iloc[0]
 config = row_to_config(row)

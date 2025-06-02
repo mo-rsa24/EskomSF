@@ -1,0 +1,110 @@
+ModelConfigMissing:
+  code: E6001
+  message: "🪹 Missing required configuration in model: {field}"
+  severity: high
+  component: model_training
+
+DBConnectionError:
+  message: "Failed to connect to {engine} database: {exception}"
+  code: 103
+  severity: high
+  component: db_connection_pool
+
+
+InvalidSeries:
+  code: E6002
+  message: "🪹 Input series is empty or invalid for Pod ID: {pod_id} and Consumption Type: {consumption_type}"
+  severity: medium
+  component: model_training
+
+ConfigMissing:
+  code: E7001
+  message: "☣️ Missing or invalid configuration key: {field}"
+  severity: high
+  component: config_loader
+
+ProfilerInsertFailure:
+  code: E9001
+  message: "☣️ Failed to insert profiler log: {exception}"
+  severity: medium
+  component: profiler_logger
+
+
+ModelFitFailure:
+  code: E6003
+  message: "🪹 Model training failed: {exception}"
+  severity: critical
+  component: model_training
+
+MissingCSV:
+  code: E4001
+  message: "🚫 CSV file not found for method: {forecast_method_name}"
+  severity: medium
+  component: data_loading
+
+EmptyQueryResult:
+  code: E3001
+  message: "🚫 No data returned for forecast method {forecast_method_id}"
+  severity: high
+  component: database_call
+
+EmptyConfigResult:
+  code: E3002
+  message: "🚫 No user forecast method data returned for Databricks Task ID: {databrick_task_id}"
+  severity: high
+  component: database_call
+
+PandasLoadError:
+  code: E5001
+  message: "❌ Failed to process DataFrame: {exception}"
+  severity: high
+  component: dataframe_ops
+
+SchemaMismatch:
+  code: E2001
+  message: "❌ Schema mismatch or required column missing: {column}"
+  severity: high
+  component: validation
+
+MissingTargetColumn:
+  code: E6011
+  message: "Target column '{column}' not found for Pod {pod_id}."
+  severity: high
+  component: feature_extraction
+
+InsufficientObservations:
+  code: E6012
+  message: "Series '{consumption_type}' has insufficient observations ({series_length})."
+  severity: high
+  component: model_training
+
+NonStationarySeries:
+  code: E6013
+  message: "ADF test indicates non-stationarity in '{consumption_type}' (p={p_value})."
+  severity: medium
+  component: stationarity_test
+
+ForecastIndexError:
+  code: E6014
+  message: "Index error during forecast for Pod {pod_id} with {steps} steps."
+  severity: high
+  component: forecast_generation
+
+SplitConfigurationError:
+  code: E6015
+  message: "Series too short ({series_length}) for 3-way split in {consumption_type}."
+  severity: medium
+  component: model_training
+
+ParameterGridInvalid:
+  code: E6016
+  message: "No valid parameter grid found for customer {customer_id}."
+  severity: high
+  component: hyperparameter_config
+
+
+UnknownError:
+  code: E9999
+  message: "❌ Unhandled exception: {exception}"
+  severity: critical
+  component: global

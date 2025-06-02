@@ -376,7 +376,7 @@ def train_random_forest_for_single_customer(model: ForecastModel) -> pd.DataFram
         wide = finalize_model_performance_df(
             df_long,
             model_name=ufm_config.forecast_method_name,
-            databrick_id=getattr(ufm_config, 'databrick_id', None),
+            databrick_id=getattr(ufm_config, 'databrick_task_id', None),
             user_forecast_method_id=ufm_config.user_forecast_method_id
         )
         # df_long has columns ['consumption_type','RMSE','R2', ...]
@@ -390,7 +390,7 @@ def train_random_forest_for_single_customer(model: ForecastModel) -> pd.DataFram
             ModelName=ufm_config.forecast_method_name,
             CustomerID=customer_id,
             PodID=pod_id,
-            DataBrickID=getattr(ufm_config, "databrick_id", None),
+            DataBrickID=getattr(ufm_config, "databrick_task_id", None),
             UserForecastMethodID=ufm_config.user_forecast_method_id,
             metrics=metrics
         )
@@ -418,7 +418,7 @@ def train_random_forest_for_single_customer(model: ForecastModel) -> pd.DataFram
     logger.info("✅ [RF] Forecast aggregation complete.")
     return pod_id_performance_data
 
-def is_series_valid(series: pd.Series, min_length: int = 30) -> Tuple[bool, str]:
+def is_series_valid(series: pd.Series, min_length: int = 3) -> Tuple[bool, str]:
     if series.isnull().all():
         return False, "All NaN values"
     if series.nunique() <= 1:

@@ -1,0 +1,28 @@
+CREATE TABLE IF NOT EXISTS profiling_logs (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    run_id CHAR(36) NOT NULL,
+    app_name VARCHAR(255),
+    module VARCHAR(255),
+    function VARCHAR(255),
+    category VARCHAR(100),
+    message TEXT,
+    start_time DATETIME,
+    end_time DATETIME,
+    duration_ms FLOAT,
+    duration_readable VARCHAR(20),
+    error TEXT,
+    traceback LONGTEXT,
+    hostname VARCHAR(255),
+    thread_id BIGINT,
+    status ENUM('completed', 'failed'),
+    forecast_method_id INT,
+    forecast_method_name VARCHAR(255),
+    databrick_id INT,
+    user_forecast_method_id INT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    INDEX idx_run_id (run_id),
+    INDEX idx_start_time (start_time),
+    INDEX idx_app_function (app_name, function),
+    INDEX idx_category (category)
+);

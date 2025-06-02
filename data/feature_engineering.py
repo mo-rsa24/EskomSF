@@ -21,7 +21,7 @@ def engineer_features(
     df: pd.DataFrame,
     target_col: str,
     sa_holidays: set = None,
-    lag_hours: list = [168, 336, 504, 672],
+    lag_months: list = [12, 24, 36, 48, 60],
     add_calendar: bool = True,
     use_extended_calendar_features: bool = True,
     drop_na: bool = True
@@ -61,13 +61,13 @@ def engineer_features(
         df = pd.get_dummies(df, columns=['Season'], prefix='Season')
 
     # 🔁 Lag Features (only if enough rows)
-    if len(df) > max(lag_hours):
+    if len(df) > max(lag_months):
         df[target_col] = pd.to_numeric(df[target_col], errors='coerce')
-        for lag in lag_hours:
+        for lag in lag_months:
             df[f"{target_col}_lag{lag}"] = df[target_col].shift(periods=lag)
     else:
         logger.warning(
-            f"⚠️ Skipping lag features: only {len(df)} rows but max lag requested is {max(lag_hours)}."
+            f"⚠️ Skipping lag features: only {len(df)} rows but max lag requested is {max(lag_months)}."
         )
     # 🧹 Final cleanup
     if drop_na:
@@ -81,7 +81,7 @@ def grouped_engineer_features(
     df: pd.DataFrame,
     target_col: str,
     sa_holidays: set = None,
-    lag_hours: list = [168, 336, 504, 672],
+    lag_months: list = [12, 24, 36, 48, 60],
     add_calendar: bool = True,
     use_extended_calendar_features: bool = True,
     drop_na: bool = True,
@@ -100,7 +100,7 @@ def grouped_engineer_features(
             df=group_df,
             target_col=target_col,
             sa_holidays=sa_holidays,
-            lag_hours=lag_hours,
+            lag_months=lag_months,
             add_calendar=add_calendar,
             use_extended_calendar_features=use_extended_calendar_features,
             drop_na=drop_na

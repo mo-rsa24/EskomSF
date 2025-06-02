@@ -1,0 +1,36 @@
+Separate results on case-by-case basis:
+| Case            | Module     | Function          | Duration | Error? |
+| --------------- | ---------- | ----------------- | -------- | ------ |
+| Normal run      | `etl`      | `load_data`       | 1s       | ❌      |
+| Long success    | `modeling` | `train_model`     | 12m 30s  | ❌      |
+| KeyError        | `pipeline` | `merge_outputs`   | 5s       | ✅      |
+| NaN ValueError  | `modeling` | `train_model`     | 45s      | ✅      |
+| Micro-task      | `system`   | `health_check`    | 12 ms    | ❌      |
+| Monthly retrain | `batch`    | `monthly_retrain` | 12 hrs   | ❌      |
+
+
+| Feature                     | Description                            |
+| --------------------------- | -------------------------------------- |
+| `status` column             | Enum flag: `'completed'` or `'failed'` |
+| Default                     | `'completed'`                          |
+| Auto-set on insert          | Based on whether `error` is NULL       |
+| Queries can now filter fast | `WHERE status = 'failed'`              |
+
+
+✅ 2. MariaDB: Duration Summary via SQL
+📊 Sample Output
+
+| function                 | runs | total\_seconds | avg\_duration\_ms | max\_ms | min\_ms | first\_logged       | last\_logged        |
+| ------------------------ | ---- | -------------- | ----------------- | ------- | ------- | ------------------- | ------------------- |
+| load\_and\_prepare\_data | 5    | 21.44          | 4288.6            | 6200    | 3100    | 2025-05-02 08:00:01 | 2025-05-02 10:00:01 |
+| clean\_dataframe         | 5    | 5.52           | 1104.4            | 1300    | 980     | 2025-05-02 08:00:02 | 2025-05-02 10:00:02 |
+| load\_ufm\_config        | 5    | 1.21           | 242.0             | 300     | 200     | 2025-05-02 08:00:00 | 2025-05-02 10:00:00 |
+
+
+| Use Case                              | Single Table (`profiling_logs`) | Dual Table (`+ profiling_errors`) |
+| ------------------------------------- | ------------------------------- | --------------------------------- |
+| Real-time alerts on failures          | ⚠️ Costly                       | ✅ Indexed + clean                 |
+| Error deduplication & clustering      | ❌ Hard to query efficiently     | ✅ Dedicated field structure       |
+| OLAP on success/failure distributions | ✅ Easy                          | ✅ Same                            |
+| Long retention of errors only         | ❌ Impossible                    | ✅ Easy to configure per-table     |
+| Joins on traceback content            | ❌ Messy                         | ✅ Safe and scoped                 |

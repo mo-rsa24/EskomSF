@@ -1,8 +1,12 @@
 # main.py
 import argparse
 import logging
+
+import pandas as pd
+
 from config_loader import load_config  # your existing config loader module
 from data.dataset import ForecastDataset
+from profiler.profiler_run import run_context
 from programs.pipeline import ForecastPipeline
 
 from diagnostics import run_stationarity_tests, plot_stl_decomposition
@@ -17,12 +21,15 @@ def main():
     # Load forecasting configuration (from config.yaml or database)
     config = load_config("config.yaml") # Forecast config
 
+    # ✅ Initialize global run context ONCE
+    run_context.init(app_name="forecasting-engine")
+
     parser = argparse.ArgumentParser(description="Forecasting Engine Runner")
     parser.add_argument("--databrick_task_id", type=int, default=1,
                         help="Databrick task ID for forecasting")
     args = parser.parse_args()
 
-    dataset = ForecastDataset(args.databrick_task_id)
+    dataset = ForecastDataset(args.databrick_task_id, config.save)
     dataset.load_data()
     dataset.parse_identifiers()
 
@@ -61,6 +68,7 @@ def main():
 
     pipeline = ForecastPipeline(dataset=dataset,config=config)
     model_performance, forecast_combined_df = pipeline.run()
+    forecast_combined_df.to_csv("output.csv")
     logging.info("Forecasting result: %s", model_performance)
 
 

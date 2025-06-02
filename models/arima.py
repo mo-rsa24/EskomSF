@@ -8,6 +8,7 @@ logger.setLevel(logging.INFO)
 
 
 class ARIMAModel(ForecastModel):
+
     def train(self) -> pd.DataFrame:
         """
         Train and forecast using the ARIMA/SARIMA model.

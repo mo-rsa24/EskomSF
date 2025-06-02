@@ -23,7 +23,7 @@ def _convert_to_model_performance_row(pod_perf, customer_id, pod_id, config):
         ModelName=config.forecast_method_name,
         CustomerID=customer_id,
         PodID=pod_id,
-        DataBrickID=getattr(config, "databrick_id", None),
+        DataBrickID=getattr(config, "databrick_task_id", None),
         UserForecastMethodID=config.user_forecast_method_id,
         metrics=metrics
     )
@@ -40,7 +40,7 @@ def _convert_forecast_map_to_spark_df(pod_perf, config):
     return finalize_model_performance_df(
             df_long,
             model_name=config.forecast_method_name,
-            databrick_id=getattr(config, 'databrick_id', None),
+            databrick_id=getattr(config, 'databrick_task_id', None),
             user_forecast_method_id=config.user_forecast_method_id
     )
 
@@ -63,7 +63,7 @@ def extract_exogenous_features(
     pod_id: str,
     sa_holidays: set = None,
     use_feature_engineering: bool = True,
-    lag_hours: list = [168, 336, 504, 672]
+    lag_months: list = [12, 24, 36, 48, 60],
 ) -> pd.DataFrame:
     """
     Extract exogenous features aligned with the target series for SARIMAX/ML models.
@@ -90,7 +90,7 @@ def extract_exogenous_features(
         df=pod_df,
         target_col=consumption_type,
         sa_holidays=sa_holidays,
-        lag_hours=lag_hours,
+        lag_hours=lag_months,
         drop_na=True
     )
 

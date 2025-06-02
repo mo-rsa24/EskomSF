@@ -47,7 +47,7 @@ class ForecastConfig:
     user_forecast_method_id: int
     start_date: pd.Timestamp
     end_date: pd.Timestamp
-    databrick_id: int
+    databrick_task_id: int
 
 def row_to_config(row: pd.Series) -> ForecastConfig:
     return ForecastConfig(
@@ -59,5 +59,5 @@ def row_to_config(row: pd.Series) -> ForecastConfig:
         user_forecast_method_id=row["UserForecastMethodID"],
         start_date=row["StartDate"],
         end_date=row["EndDate"],
-        databrick_id=row["DatabrickID"],
+        databrick_task_id=row["DatabrickID"],
     )

@@ -15,7 +15,7 @@ def extract_metadata(df):
             "ufm_id": df.iloc[0]['UserForecastMethodID'],
             "start_date": df.iloc[0]['StartDate'],
             "end_date": df.iloc[0]['EndDate'],
-            "databrick_id": df.iloc[0]['DatabrickID'],
+            "databrick_task_id": df.iloc[0]['DatabrickID'],
         }
         return metadata
     except (KeyError, IndexError) as e:

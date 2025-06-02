@@ -6,6 +6,7 @@ import joblib
 import logging
 import numpy as np
 import pandas as pd
+from sklearn.compose import ColumnTransformer
 from sklearn.exceptions import ConvergenceWarning
 
 from xgboost import XGBRegressor
@@ -126,7 +127,7 @@ def create_inner_cv() -> KFold:
     Create a KFold cross-validation object based on the configuration.
 
     Returns:
-        KFold: The configured KFold cross-validator.
+        KFold: The configured KFold cross-validator.f
     """
     cv_config = get_cv_config()
     return KFold(
@@ -534,7 +535,7 @@ def train_xgboost_for_single_customer(model: ForecastModel) -> pd.DataFrame:
         wide = finalize_model_performance_df(
             df_long,
             model_name=ufm_config.forecast_method_name,
-            databrick_id=getattr(ufm_config, 'databrick_id', None),
+            databrick_id=getattr(ufm_config, 'databrick_task_id', None),
             user_forecast_method_id=ufm_config.user_forecast_method_id
         )
         # df_long has columns ['consumption_type','RMSE','R2', ...]
@@ -548,7 +549,7 @@ def train_xgboost_for_single_customer(model: ForecastModel) -> pd.DataFrame:
             ModelName=ufm_config.forecast_method_name,
             CustomerID=customer_id,
             PodID=pod_id,
-            DataBrickID=getattr(ufm_config, "databrick_id", None),
+            DataBrickID=getattr(ufm_config, "databrick_task_id", None),
             UserForecastMethodID=ufm_config.user_forecast_method_id,
             metrics=metrics
         )
@@ -587,33 +588,35 @@ def train_xgboost_globally_forecast_locally_with_aggregation(model: ForecastMode
 
 
 def prepare_global_training_data(model: ForecastModel) -> Tuple[pd.DataFrame, List[str]]:
-    """
-    Prepares the dataset for global model training: encodes IDs, creates lag and temporal features.
-    """
-    consumption_types = getattr(model.dataset, 'variable_ids', None) or model.config.consumption_types
     df = model.dataset.processed_df.copy()
-    df['CustomerID_encoded'] = LabelEncoder().fit_transform(df['CustomerID'].astype(str))
-    df['PodID_encoded'] = LabelEncoder().fit_transform(df['PodID'].astype(str))
+
+    # Drop constant or all-zero consumption columns
+    usable = [col for col in model.config.selected_columns if df[col].nunique() > 1 and not (df[col] == 0).all()]
+    df = df.drop(columns=[col for col in model.config.selected_columns if col not in usable])
+
+    # Add Month and Year
     df = create_month_and_year_columns(df)
-    df = create_lag_features(df, model.config.selected_columns, lags=3)
-    df, lag_features = prepare_lag_features(df, consumption_types)
-    feature_columns = lag_features + ['Month', 'Year', 'CustomerID_encoded', 'PodID_encoded']
+
+    # Encode IDs for grouping only; do not use in feature_columns
+    df['CustomerID'] = df['CustomerID'].astype(str)
+    df['PodID'] = df['PodID'].astype(str)
+
+    # Create lag features (but keep original ID fields for grouping later)
+    df, lag_features = prepare_lag_features(df, lag_columns=usable, base_features=["Month", "Year"])
+
+    # Final feature columns (exclude identifiers)
+    feature_columns = [f for f in lag_features if f not in ['CustomerID', 'PodID']]
     return df, feature_columns
 
 
 def train_global_xgboost_models(df: pd.DataFrame, feature_columns: List[str], model: ForecastModel) -> Dict[str, Any]:
-    """
-    Trains global XGBoost models for each consumption type.
-    """
     global_models = {}
-    ufm_config = model.dataset.ufm_config
     mode = model.config.mode
-    consumption_types = getattr(model.dataset, 'variable_ids', None) or model.config.consumption_types
+    ufm_config = model.dataset.ufm_config
+    consumption_types = [ct for ct in model.config.consumption_types if ct in df.columns]
+
     for consumption_type in consumption_types:
         X, y = prepare_features_and_target(df, feature_columns, consumption_type)
-        if X.empty or y.empty:
-            logger.warning(f"Skipping {consumption_type} due to insufficient data.")
-            continue
 
         # ✅ Add Global Series Validation Here
         valid, reason = is_series_valid(y)
@@ -621,107 +624,85 @@ def train_global_xgboost_models(df: pd.DataFrame, feature_columns: List[str], mo
             logger.warning(f"⚠️ Skipping global model training for {consumption_type}: {reason}.")
             continue
 
-        param_grid = get_model_hyperparameters("xgboost", ufm_config.model_parameters)
-        param_grid = regressor_grid_for_pipeline(
-            param_grid,
-            prefix="regressor__",
-            param_names=XGB_PARAM_NAMES  # <-- override RF_PARAM_NAMES
-        )
-        logger.info(f"💡 [XGBoost] Hyperparameters: {param_grid}")
+        pipeline = Pipeline([
+            ('imputer', SimpleImputer(strategy='mean')),
+            ('scaler', StandardScaler()),
+            ('regressor', XGBRegressor(objective='reg:squarederror', random_state=42))
+        ])
 
-        model_dir = os.path.join("model_configuration", ufm_config.forecast_method_name, "global")
+        param_grid = get_model_hyperparameters('xgboost', ufm_config.model_parameters)
+        param_grid = regressor_grid_for_pipeline(param_grid, prefix='regressor__', param_names=XGB_PARAM_NAMES)
+        model_dir = os.path.join('model_configuration', ufm_config.forecast_method_name, 'global')
         os.makedirs(model_dir, exist_ok=True)
 
-        pipeline = build_xgb_pipeline()
-        best_model = None
         if mode == 'validation':
-            cv = KFold(n_splits=3, shuffle=True, random_state=42)
-            search = GridSearchCV(pipeline, param_grid, cv=cv, scoring='neg_mean_absolute_error', n_jobs=-1)
+            search = GridSearchCV(pipeline, param_grid, cv=3, n_jobs=-1, scoring='neg_mean_absolute_error')
             search.fit(X, y)
             best_model = search.best_estimator_
             save_best_params_xgb(search.best_params_, model_dir, consumption_type)
-        elif mode in ['train', 'test']:
-            best_params = load_best_params_xgb(model_dir, consumption_type)
-            if best_params is None:
-                best_params = {k: v[0] for k, v in param_grid.items()}
+        else:
+            best_params = load_best_params_xgb(model_dir, consumption_type) or {k: v[0] for k, v in param_grid.items()}
             pipeline.set_params(**best_params)
             pipeline.fit(X, y)
             best_model = pipeline
-            if mode == 'train':
-                joblib.dump({'model': best_model}, os.path.join(model_dir, f"{consumption_type}.pkl"))
+            # if mode == 'train':
+            #     joblib.dump({'model': best_model}, os.path.join(model_dir, f"{consumption_type}.pkl"))
+
         global_models[consumption_type] = best_model
+
     return global_models
 
 
 def is_series_valid(series: pd.Series, min_length: int = 30) -> Tuple[bool, str]:
     if series.isnull().all():
         return False, "All NaN values"
-    if series.nunique() <= 1:
-        return False, "Constant or all zero series"
     if len(series) < min_length:
         return False, "Too few observations"
     return True, "Series valid"
 
-def forecast_locally_with_global_xgboost_models(df: pd.DataFrame, feature_columns: List[str], global_models: Dict[str, Any], model: ForecastModel) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """
-    Performs local forecasts per customer/pod using globally trained XGBoost models. Aggregates results.
-    """
+def forecast_locally_with_global_xgboost_models(
+    df: pd.DataFrame,
+    feature_columns: List[str],
+    global_models: Dict[str, Any],
+    model: ForecastModel
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
     from models.algorithms.helper import _convert_to_model_performance_row, _convert_forecast_map_to_df, _aggregate_forecast_outputs
-
     ufm_config = model.dataset.ufm_config
     forecast_dates = model.dataset.forecast_dates
-    consumption_types = getattr(model.dataset, 'variable_ids', None) or model.config.consumption_types
+    trained_types = global_models.keys()
 
-    consumer_perf_data = CustomerPerformanceData(customer_id="GLOBAL", columns=consumption_types)
+    consumer_perf_data = CustomerPerformanceData("GLOBAL", columns=list(trained_types))
     model_perf_rows = []
     all_forecasts = []
 
-    unique_customers = df['CustomerID'].unique()
-    for customer_id in unique_customers:
-        customer_df = df[df['CustomerID'] == customer_id]
-        for pod_id in customer_df['PodID'].unique():
-            pod_df = customer_df[customer_df['PodID'] == pod_id]
+    for cust_id in df['CustomerID'].unique():
+        cust_df = df[df['CustomerID'] == cust_id]
+        for pod_id in cust_df['PodID'].unique():
+            pod_df = cust_df[cust_df['PodID'] == pod_id]
             pod_perf_rows = []
 
-            for consumption_type in consumption_types:
-                X_pod, y_pod = prepare_features_and_target(pod_df, feature_columns, consumption_type)
-                if X_pod.empty or y_pod.empty:
-                    continue
+            for ct in trained_types:
+                if ct not in pod_df.columns: continue
+                X_pod, y_pod = prepare_features_and_target(pod_df, feature_columns, ct)
+                if X_pod.empty or y_pod.empty: continue
 
-                # ✅ Add Series Validation Here
-                valid, reason = is_series_valid(y_pod)
-                if not valid:
-                    logger.warning(f"⚠️ Skipping {consumption_type} for pod {pod_id}: {reason}.")
-                    forecast = pd.Series([0] * len(forecast_dates), index=forecast_dates)
-                    pod_perf_rows.append(_collect_metrics(
-                        pod_id, customer_id, consumption_type, forecast
-                    ))
-                    continue
-
-
-                model_for_type = global_models.get(consumption_type)
-                y_pred = model_for_type.predict(X_pod)
+                model_for_ct = global_models[ct]
+                y_pred = model_for_ct.predict(X_pod)
                 metrics, baseline = evaluate_predictions(y_pod, y_pred)
 
-                # Future Forecast
-                try:
-                    future_X = pd.DataFrame(0, index=forecast_dates, columns=feature_columns)
-                    future_X[['CustomerID_encoded', 'PodID_encoded']] = [
-                        pod_df['CustomerID_encoded'].iloc[0],
-                        pod_df['PodID_encoded'].iloc[0]
-                    ]
-                    y_future = model_for_type.predict(future_X)
-                    future_forecast = pd.Series(y_future, index=forecast_dates)
-                except Exception as e:
-                    logger.error(f"⚠️ Forecast failed for {customer_id}-{pod_id}-{consumption_type}: {e}")
-                    future_forecast = pd.Series([], dtype=float)
+                future_X = pd.DataFrame(0, index=forecast_dates, columns=feature_columns)
+                for col in ['Month', 'Year']:
+                    if col in feature_columns:
+                        future_X[col] = [d.month if col == 'Month' else d.year for d in forecast_dates]
 
-                # Collect performance row
+                future_forecast = model_for_ct.predict(future_X)
+                future_series = pd.Series(future_forecast, index=forecast_dates)
+
                 pod_perf_rows.append({
                     'pod_id': pod_id,
-                    'customer_id': customer_id,
-                    'consumption_type': consumption_type,
-                    'forecast': future_forecast,
+                    'customer_id': cust_id,
+                    'consumption_type': ct,
+                    'forecast': future_series,
                     'RMSE': metrics['RMSE'],
                     'MAE': metrics['MAE'],
                     'R2': metrics['R2'],
@@ -731,21 +712,34 @@ def forecast_locally_with_global_xgboost_models(df: pd.DataFrame, feature_column
                 })
 
             if pod_perf_rows:
-                performance_df = pd.DataFrame(pod_perf_rows)
-                pod_perf_data = PodIDPerformanceData(
-                    pod_id=pod_id,
-                    forecast_method_name=ufm_config.forecast_method_name,
-                    customer_id=customer_id,
-                    user_forecast_method_id=ufm_config.user_forecast_method_id,
-                    performance_data_frame=performance_df
-                )
-                consumer_perf_data.pod_by_id_performance.append(pod_perf_data)
-                model_perf_rows.append(_convert_to_model_performance_row(pod_perf_data, customer_id, pod_id, ufm_config))
-                all_forecasts.append(_convert_forecast_map_to_df(pod_perf_data, customer_id, pod_id, ufm_config))
+                df_perf = pd.DataFrame(pod_perf_rows)
+                perf_data = PodIDPerformanceData(pod_id, ufm_config.forecast_method_name, cust_id, ufm_config.user_forecast_method_id, df_perf)
+                consumer_perf_data.pod_by_id_performance.append(perf_data)
+                model_perf_rows.append(_convert_to_model_performance_row(perf_data, cust_id, pod_id, ufm_config))
+                all_forecasts.append(_convert_forecast_map_to_df(perf_data, cust_id, pod_id, ufm_config))
 
-    # Aggregate performance and forecast outputs
-    all_perf_df, final_perf_df, xgb_performance_df, forecast_combined_df = _aggregate_forecast_outputs(
-        consumer_perf_data, model_perf_rows, all_forecasts
-    )
-    logger.info("✅ Forecasting and aggregation complete.")
-    return xgb_performance_df, forecast_combined_df
+    if not model_perf_rows or not all_forecasts:
+        logger.warning("No forecasts were generated due to invalid series.")
+        return pd.DataFrame(), pd.DataFrame()
+    _, _, xgb_perf_df, forecast_combined_df = _aggregate_forecast_outputs(
+        consumer_perf_data, model_perf_rows, all_forecasts)
+    forecast_combined_df = fill_missing_consumption_columns_wide(forecast_combined_df, model)
+    return xgb_perf_df, forecast_combined_df
+
+def fill_missing_consumption_columns_wide(df, model):
+    desired_order = ["PodID", "UserForecastMethodID", "CustomerID", "ReportingMonth",
+        "OffPeakConsumption", "StandardConsumption", "PeakConsumption",
+        "Block1Consumption", "Block2Consumption", "Block3Consumption",
+        "Block4Consumption", "NonTOUConsumption"
+    ]
+
+    # Fill missing consumption columns with zeros
+    for col in model.config.consumption_types:
+        if col not in df.columns:
+            df[col] = 0.0
+
+    # Reorder columns (only include those that exist in the DataFrame)
+    reordered_cols = [col for col in desired_order if col in df.columns]
+    other_cols = [col for col in df.columns if col not in reordered_cols]
+    return df[reordered_cols + other_cols]
+

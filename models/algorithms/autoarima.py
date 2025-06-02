@@ -14,6 +14,7 @@ from typing import Tuple, Union, Optional, NamedTuple
 
 from data.lag_safety import validate_lag_vs_horizon, log_lag_strategy
 from db.queries import ForecastConfig
+from db.error_logger import insert_profiling_error
 from evaluation.performance import *
 from hyperparameters import get_model_hyperparameters
 from models.algorithms.helper import _aggregate_forecast_outputs, _convert_to_model_performance_row, \
@@ -141,9 +142,11 @@ def tune_arima_with_cv(series: pd.Series, param_grid: List[Tuple[int, int, int]]
     logger.info(f"✅ Best ARIMA config: {best_params} with RMSE: {best_score:.2f}")
     return best_params
 
+@profiled_function(category="model_training",enabled=profiling_switch.enabled)
+@databricks_safe(error_key="ModelFitFailure")  # fallback
 def forecast_arima_for_single_customer(model: ForecastModel):
     """
-    Forecast ARIMA/SARIMA models for a single customer using information embedded in the model instance.
+    Function: Forecast ARIMA/SARIMA models for a single customer using information embedded in the model instance.
 
     This function extracts all necessary parameters from the ForecastModel instance, including:
       - The processed DataFrame from the ForecastDataset.
@@ -163,49 +166,89 @@ def forecast_arima_for_single_customer(model: ForecastModel):
     Returns:
         pd.DataFrame: Aggregated forecasting results in long format.
     """
-    df = model.dataset.processed_df
-    unique_customers, unique_pod_ids = model.dataset.extract_unique_customers_and_pods()
-    ufm_config = model.dataset.ufm_config
-    consumption_types = getattr(model.dataset, 'variable_ids', None) or model.config.consumption_types
+    try:
+        forecast_method_id = getattr(model.dataset.ufm_config, "forecast_method_id", None)
+        # Step 1: Validate dataset
+        if model.dataset is None or model.dataset.processed_df is None:
+            meta = get_error_metadata("ModelConfigMissing", {"field": "dataset.df"})
+            insert_profiling_error(
+                log_id=None,
+                error=meta["message"],
+                traceback="",  # or traceback.format_exc()
+                error_type="ModelConfigMissing",
+                severity=meta["severity"],
+                component=meta["component"]
+            )
+            safe_exit(meta["code"], meta["message"])
 
-    order, seasonal_order = get_model_hyperparameters(ufm_config.forecast_method_name, ufm_config.model_parameters)
-    logger.info(f"💡 Extracted hyperparameters: order={order}, seasonal_order={seasonal_order}")
+        if model.dataset.processed_df.empty:
+            meta = get_error_metadata("EmptySeries", {"forecast_method_id": forecast_method_id})
+            insert_profiling_error(
+                log_id=None,
+                error=meta["message"],
+                traceback="",  # or traceback.format_exc()
+                error_type="EmptySeries",
+                severity=meta["severity"],
+                component=meta["component"]
+            )
+            safe_exit(meta["code"], meta["message"])
 
-    all_forecasts = []
-    arima_model_performances_dataframes: List[pd.DataFrame] = []
-    for customer_id in unique_customers:
-        customer_data = _get_customer_data(df, customer_id)
-        if customer_data.empty:
-            logger.warning(f"🚫 No data found for customer {customer_id}, skipping.")
-            continue
+        df = model.dataset.processed_df
+        unique_customers, unique_pod_ids = model.dataset.extract_unique_customers_and_pods()
+        ufm_config = model.dataset.ufm_config
+        consumption_types = getattr(model.dataset, 'variable_ids', None) or model.config.consumption_types
 
-        consumer_perf = CustomerPerformanceData(customer_id=customer_id, columns=consumption_types)
-        arima_rows: List[ModelPodPerformance] = []
-        for pod_id in unique_pod_ids:
-            pod_df = customer_data[customer_data["PodID"] == pod_id].sort_values('ReportingMonth')
-            logger.info(f"🚀 Forecasting Customer {customer_id}, Pod {pod_id}")
-            pod_perf = forecast_for_podel_id(
-                pod_df, order, customer_id, pod_id, consumption_types, ufm_config,
-                forecast_model=model, seasonal_order=seasonal_order)
-            consumer_perf.pod_by_id_performance.append(pod_perf)
-            # --- Performance Dataclass (Modularized) ---
-            mpp = _convert_to_model_performance_row(pod_perf, customer_id, pod_id, ufm_config)
-            arima_rows.append(mpp)
+        order, seasonal_order = get_model_hyperparameters(ufm_config.forecast_method_name, ufm_config.model_parameters)
+        logger.info(f"💡 Extracted hyperparameters: order={order}, seasonal_order={seasonal_order}")
 
-            # --- Forecast DataFrame (Pandas) ---
-            forecast_df = _convert_forecast_map_to_df(pod_perf, customer_id, pod_id, ufm_config)
-            all_forecasts.append(forecast_df)
-            logger.info(f"✅ Processed pod {pod_id} for customer {customer_id}.")
+        all_forecasts = []
+        arima_model_performances_dataframes: List[pd.DataFrame] = []
+        for customer_id in unique_customers:
+            customer_data = _get_customer_data(df, customer_id)
+            if customer_data.empty:
+                logger.warning(f"🚫 No data found for customer {customer_id}, skipping.")
+                continue
 
-        arima_performance_df = pd.DataFrame([m.to_row() for m in arima_rows])
-        arima_model_performances_dataframes.append(arima_performance_df)
+            consumer_perf = CustomerPerformanceData(customer_id=customer_id, columns=consumption_types)
+            arima_rows: List[ModelPodPerformance] = []
 
-        logger.info("✅ Forecast aggregation complete for {customer_id} complete.")
+            unique_pod_ids = customer_data['PodID'].unique().tolist()
+            for pod_id in unique_pod_ids:
+                pod_df = customer_data[customer_data["PodID"] == pod_id].sort_values('ReportingMonth')
+                logger.info(f"🚀 Forecasting Customer {customer_id}, Pod {pod_id}")
+                pod_perf = forecast_for_podel_id(
+                    pod_df, order, customer_id, pod_id, consumption_types, ufm_config,
+                    forecast_model=model, seasonal_order=seasonal_order)
+                consumer_perf.pod_by_id_performance.append(pod_perf)
+                # --- Performance Dataclass (Modularized) ---
+                mpp = _convert_to_model_performance_row(pod_perf, customer_id, pod_id, ufm_config)
+                arima_rows.append(mpp)
 
-    # Combine across all customers
-    arima_performance = pd.concat(arima_model_performances_dataframes).reset_index().drop(columns=['index'])
-    forecast_combined_df = pd.concat(all_forecasts, ignore_index=True)
-    return arima_performance, forecast_combined_df
+                # --- Forecast DataFrame (Pandas) ---
+                forecast_df = _convert_forecast_map_to_df(pod_perf, customer_id, pod_id, ufm_config)
+                all_forecasts.append(forecast_df)
+                logger.info(f"✅ Processed pod {pod_id} for customer {customer_id}.")
+
+            arima_performance_df = pd.DataFrame([m.to_row() for m in arima_rows])
+            arima_model_performances_dataframes.append(arima_performance_df)
+
+            logger.info("✅ Forecast aggregation complete for {customer_id} complete.")
+
+        # Combine across all customers
+        arima_performance = pd.concat(arima_model_performances_dataframes).reset_index().drop(columns=['index'])
+        forecast_combined_df = pd.concat(all_forecasts, ignore_index=True)
+        return arima_performance, forecast_combined_df
+    except Exception as e:
+        meta = get_error_metadata("ModelFitFailure", {"exception": str(e)})
+        insert_profiling_error(
+            log_id=None,
+            error=meta["message"],
+            traceback="",  # or traceback.format_exc()
+            error_type="ModelFitFailure",
+            severity=meta["severity"],
+            component=meta["component"]
+        )
+        raise
 
 def forecast_for_podel_id(
     df: pd.DataFrame,
@@ -225,20 +268,41 @@ def forecast_for_podel_id(
     sa_holidays = get_sa_holidays(2023, 2026)
     steps = len(forecast_horizon)
 
-    validate_lag_vs_horizon(forecast_model.config.lag_hours, steps, fail_on_violation=False)
-    log_lag_strategy(use_lag_features=forecast_model.config.use_feature_engineering, train_mode=forecast_model.config.train_mode)
+    # validate_lag_vs_horizon(forecast_model.config.lag_hours, steps, fail_on_violation=False)
+    # log_lag_strategy(use_lag_features=forecast_model.config.use_feature_engineering, train_mode=forecast_model.config.train_mode)
 
     model_dir = f"model_configuration/{ufm_config.forecast_method_name}/customer_{customer_id}/pod_{pod_id}"
     os.makedirs(model_dir, exist_ok=True)
 
     for consumption_type in consumption_types:
         pod_df = df[df["PodID"] == pod_id].sort_index()
+
         # --- Prepare series (y)
         series = prepare_time_series_data(df, consumption_type)
-        if series.isnull().all() or series.nunique() <= 1 or len(series) < 30:
-            logger.warning(f"Skipping {consumption_type} for pod {pod_id}: invalid series.")
+        if series.isnull().all() or series.nunique() <= 1:
+            meta = get_error_metadata("InvalidSeries", {"pod_id": pod_id, "consumption_type":consumption_type})
+            insert_profiling_error(
+                log_id=None,
+                error=meta["message"],
+                traceback="",  # or traceback.format_exc()
+                error_type="InvalidSeries",
+                severity=meta["severity"],
+                component=meta["component"]
+            )
+            logger.warning(f"⚠️ Invalid series for {consumption_type} @ Pod {pod_id}. Skipping.")
             forecast = pd.Series([0] * steps, index=forecast_horizon)
             data.append(_collect_metrics(pod_id, customer_id, consumption_type, forecast))
+            continue
+
+        if len(series) < 10:
+            meta = get_error_metadata("SplitConfigurationError", {
+                "series_length": len(series),
+                "consumption_type": consumption_type
+            })
+            insert_profiling_error(log_id=None, **meta, traceback="")
+            forecast = pd.Series([0] * steps, index=forecast_horizon)
+            data.append(_collect_metrics(pod_id, customer_id, consumption_type, forecast))
+            logger.warning(meta["message"])
             continue
 
             # --- Prepare exog (X)
@@ -258,7 +322,6 @@ def forecast_for_podel_id(
         else:
             exog_df = pd.DataFrame(index=series.index)
         aligned_exog = exog_df.loc[series.index]
-
         sub_train, validation, final_test = split_time_series_three_way(series)
         exog_train = aligned_exog.loc[sub_train.index.union(validation.index)]
         exog_test = aligned_exog.loc[final_test.index]
@@ -267,6 +330,7 @@ def forecast_for_podel_id(
 
         best_order, best_seasonal = _load_or_tune_params(model_dir, consumption_type, sub_train, order, seasonal_order, forecast_model.config.log, forecast_model.config.mode)
         try:
+
             model = fit_time_series_model(pd.concat([sub_train, validation]), best_order, best_seasonal,
                                           forecast_model.config.log, exog=exog_train)
 
@@ -278,22 +342,64 @@ def forecast_for_podel_id(
                                                exog=exog_test if forecast_model.config.use_feature_engineering else None).predicted_mean
             if forecast_model.config.log: test_forecast = np.exp(test_forecast)
 
-            future_forecast = model.get_forecast(steps=steps,
-                                                 exog=exog_future if forecast_model.config.use_feature_engineering else None).predicted_mean
-            if forecast_model.config.log: future_forecast = np.exp(future_forecast)
+            try:
+                if series.index[-1] < forecast_horizon[0]:
+                    shifted_start = series.index[-1] + pd.offsets.MonthBegin(1)
+                    fallback_index = pd.date_range(start=shifted_start, periods=steps, freq='MS')
 
-            full_forecast = pd.concat([in_sample_preds, test_forecast, future_forecast])
+                    logger.warning(
+                        f"⚠️ [WARNING] Forecast misalignment detected: requested start={forecast_horizon[0].date()}, "
+                        f"but available data ends={series.index[-1].date()}\n"
+                        f"Proceeding to generate forecast of {steps} steps starting from {shifted_start.date()}\n"
+                        f"Affected: Customer={customer_id}, Pod={pod_id}, ConsumptionType={consumption_type}"
+                    )
 
-            if forecast_model.config.log:
-                _plot_forecast(series, full_forecast, validation, final_test)
+                    future_forecast = model.get_forecast(
+                        steps=steps,
+                        exog=exog_future if forecast_model.config.use_feature_engineering else None
+                    ).predicted_mean
+                    if forecast_model.config.log:
+                        future_forecast = np.exp(future_forecast)
+                    future_forecast.index = fallback_index
 
-            metrics, baseline_metrics = evaluate_predictions(final_test, test_forecast)
-            data.append(
-                _collect_metrics(pod_id, customer_id, consumption_type, future_forecast, metrics, baseline_metrics))
+                else:
+                    future_forecast = model.get_forecast(
+                        steps=steps,
+                        exog=exog_future if forecast_model.config.use_feature_engineering else None
+                    ).predicted_mean
+                    if forecast_model.config.log:
+                        future_forecast = np.exp(future_forecast)
+                    future_forecast.index = forecast_horizon
+                full_forecast = pd.concat([in_sample_preds, test_forecast, future_forecast])
+
+                if forecast_model.config.visualize:
+                    _plot_forecast(series, full_forecast, validation, final_test)
+
+                metrics, baseline_metrics = evaluate_predictions(final_test, test_forecast)
+                data.append(
+                    _collect_metrics(pod_id, customer_id, consumption_type, future_forecast, metrics, baseline_metrics))
+
+            except IndexError as ie:
+                meta = get_error_metadata("ForecastIndexError", {
+                    "pod_id": pod_id,
+                    "steps": steps
+                })
+                insert_profiling_error(log_id=None, **meta, traceback=traceback.format_exc())
+                forecast = pd.Series([0] * steps, index=forecast_horizon)
+                data.append(_collect_metrics(pod_id, customer_id, consumption_type, forecast))
+                logger.warning(meta["message"])
+                continue
         except Exception as e:
-            logger.warning(f"❌ Model failed for {consumption_type} | Pod {pod_id}: {e}")
-            forecast = pd.Series([0] * forecast_horizon, index=get_forecast_range(ufm_config))
-            data.append(_collect_metrics(pod_id, customer_id, consumption_type, forecast))
+            meta = get_error_metadata("ModelFitFailure", {"exception": str(e)})
+            insert_profiling_error(
+                log_id=None,
+                error=meta["message"],
+                traceback="",  # or traceback.format_exc()
+                error_type="ModelFitFailure",
+                severity=meta["severity"],
+                component=meta["component"]
+            )
+            logger.warning(f"❌ Logged model failure for {consumption_type} | Pod {pod_id}: {meta['message']}")
 
     return PodIDPerformanceData(
         pod_id=pod_id,

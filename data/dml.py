@@ -1,72 +1,154 @@
+import traceback
 
 import pandas as pd
 import logging
 import re
 import os
-from typing import Tuple, Any, List
+from typing import Tuple, Any, List, Optional
+
+from pyspark.sql import SparkSession
 
 from db.queries import get_predictive_data, get_actual_data, ForecastConfig
+from db.error_logger import insert_profiling_error
+from docstring.utilities import profiled_function
+from profiler.errors.decorators import databricks_safe
+from profiler.errors.utils import get_error_metadata
+from profiler.profiler_switch import profiling_switch
+from utils.exit_handler import safe_exit
 
 # Setup logger
 logging.basicConfig(level=logging.INFO)
 
 
-def load_and_prepare_data(ufm_config: ForecastConfig, rows: int = 5000, actual: bool = False) -> pd.DataFrame:
+@profiled_function(category="database_call", enabled=profiling_switch.enabled)
+@databricks_safe(error_key="UnknownError")
+def load_and_prepare_data(ufm_config: ForecastConfig, rows=5000, actual=False, save=False, spark=None) -> pd.DataFrame:
     """
-    Loads and prepares predictive input dataset either from a CSV file or by fetching it via a function.
+        Function: Loads and prepares predictive input dataset either from a CSV file or by fetching it via a function.
 
-    Parameters:
-    ----------
-    ufm : ForecastConfig
-        Configuration that contains information about the model
-        It contains the following variabes:
-            ufmd : int, default=39
-                UFMID to use when fetching dataset using `get_predictive_data`.
-            method : str, default="ARIMA"
-                Method name to be used in the filename when saving the dataset.
 
-    Returns:
-    -------
-    pd.DataFrame
-        A prepared DataFrame ready for use in predictive models.
-    """
-    environment = os.getenv("ENV")
-    path = f"dataset/{environment}"
-    os.makedirs(path, exist_ok=True)
-    if actual:
-        csv = f"{path}/ActualData{ufm_config.forecast_method_name}.csv"
-    else:
-        csv = f"{path}/PredictiveInputData{ufm_config.forecast_method_name}.csv"
-    if not os.path.isfile(csv):
-        logging.info(f"📥 Fetching dataset using get_predictive_data with UFMID={ufm_config.user_forecast_method_id}")
-        if actual:
-            df = get_actual_data(rows=rows)
+        Parameters:
+        ----------
+        ufm : ForecastConfig
+            Configuration that contains information about the model
+            It contains the following variables:
+                ufmd : int, default=39
+                    UFMID to use when fetching dataset using `get_predictive_data`.
+                method : str, default="ARIMA"
+                    Method name to be used in the filename when saving the dataset.
+
+        Returns:
+        -------
+        pd.DataFrame
+            A prepared DataFrame ready for use in predictive models.
+        """
+    try:
+        environment = os.getenv("ENV", "DEV")
+        path = f"dataset/{environment}"
+        os.makedirs(path, exist_ok=True)
+
+        csv = f"{path}/{'ActualData' if actual else 'PredictiveInputData'}{ufm_config.forecast_method_name}.csv"
+
+        # 🔍 Step 1: Load from DB if CSV does not exist
+        if not os.path.isfile(csv):
+            logging.info(f"📥 Fetching data for UFMID={ufm_config.user_forecast_method_id}")
+            try:
+                df = get_actual_data(rows=rows) if actual else get_predictive_data(ufm_config.user_forecast_method_id)
+            except Exception as e:
+                meta = get_error_metadata("ConnectionRefused", {"resource": "database"})
+                insert_profiling_error(
+                    log_id=None,
+                    error=meta["message"],
+                    traceback="",  # or traceback.format_exc()
+                    error_type="ConnectionRefused",
+                    severity=meta["severity"],
+                    component=meta["component"]
+                )
+                safe_exit(meta["code"], meta["message"])
+
+            if df.empty:
+                meta = get_error_metadata("EmptyQueryResult", {"forecast_method_id": ufm_config.forecast_method_id})
+                insert_profiling_error(
+                    log_id=None,
+                    error=meta["message"],
+                    traceback="",  # or traceback.format_exc()
+                    error_type="EmptyQueryResult",
+                    severity=meta["severity"],
+                    component=meta["component"]
+                )
+                safe_exit(meta["code"], meta["message"])
+
+            if save:
+                df.to_csv(csv, index=False)
+                logging.info(f"💾 Data saved to {csv}")
         else:
-            df = get_predictive_data(ufm_config.user_forecast_method_id)
-        df.to_csv(csv, index=False)
-        logging.info(f"💾 Data saved as {csv}")
+            logging.info(f"📂 Loading dataset from {csv}")
+            try:
+                df = pd.read_csv(csv)
+                logging.info("✅ Raw dataset loaded.")
+            except Exception as e:
+                meta = get_error_metadata("PandasLoadError", {"exception": str(e)})
+                insert_profiling_error(
+                    log_id=None,
+                    error=meta["message"],
+                    traceback="",  # or traceback.format_exc()
+                    error_type="PandasLoadError",
+                    severity=meta["severity"],
+                    component=meta["component"]
+                )
+                safe_exit(meta["code"], meta["message"])
 
-    else:
-        logging.info(f"📂 Loading dataset from {csv}")
-        df = pd.read_csv(csv)
-        logging.info("✅ Raw dataset loaded.")
+        # 🔍 Step 2: Schema validation
+        required_columns = ["CustomerID", "PodID"]
+        for col in required_columns:
+            if col not in df.columns:
+                meta = get_error_metadata("SchemaMismatch", {"column": col})
+                insert_profiling_error(
+                    log_id=None,
+                    error=meta["message"],
+                    traceback="",  # or traceback.format_exc()
+                    error_type="SchemaMismatch",
+                    severity=meta["severity"],
+                    component=meta["component"]
+                )
+                safe_exit(meta["code"], meta["message"])
 
-    # Type conversion
-    df['CustomerID'] = df['CustomerID'].astype(str)
-    logging.info("🔄 Converted 'CustomerID' to string.")
+        # 🔍 Step 3: Type conversion
+        try:
+            df["CustomerID"] = df["CustomerID"].astype(str)
+            df["PodID"] = df["PodID"].astype(str)
+        except Exception as e:
+            meta = get_error_metadata("PandasLoadError", {"exception": str(e)})
+            insert_profiling_error(
+                log_id=None,
+                error=meta["message"],
+                traceback="",  # or traceback.format_exc()
+                error_type="PandasLoadError",
+                severity=meta["severity"],
+                component=meta["component"]
+            )
+            safe_exit(meta["code"], meta["message"])
 
-    df['PodID'] = df['PodID'].astype(str)
-    logging.info("🔄 Converted 'PodID' to string.")
+        df = df.sort_values(by=["PodID", "ReportingMonth"])
+        logging.info("🔢 Sorted by PodID and ReportingMonth.")
 
-    # Sorting
-    df = df.sort_values(by=["PodID", "ReportingMonth"])
-    logging.info("🔢 Data sorted by 'PodID' and 'ReportingMonth'.")
+        # 🔍 Step 4: Final cleaning
+        df = clean_dataframe(df)
+        logging.info("🧹 Data cleaned.")
 
-    # Custom cleaning function
-    df = clean_dataframe(df)
-    logging.info("🧹 Data cleaned using 'clean_dataframe'.")
+        return df
 
-    return df
+    except Exception as fallback:
+        meta = get_error_metadata("UnknownError", {"exception": str(fallback)})
+        insert_profiling_error(
+            log_id=None,
+            error=meta["message"],
+            traceback="",  # or traceback.format_exc()
+            error_type="UnknownError",
+            severity=meta["severity"],
+            component=meta["component"]
+        )
+        safe_exit(meta["code"], meta["message"])
 
 
 def create_month_and_year_columns(df: pd.DataFrame, column: str = 'ReportingMonth') -> pd.DataFrame:
@@ -85,8 +167,9 @@ def clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
         df.drop(columns=['UserForecastMethodID'], inplace=True)
 
     # Convert ReportingMonth to datetime and set as index
-    df['ReportingMonth'] = pd.to_datetime(df['ReportingMonth'], format='%Y-%m-%d') \
-        .dt.to_period('M').dt.to_timestamp()
+    df['ReportingMonth'] = pd.to_datetime(df['ReportingMonth'], format='%Y-%m-%d')
+    df['ReportingMonth'] = df['ReportingMonth'].dt.to_period('M').dt.to_timestamp()
+
     df.set_index('ReportingMonth', inplace=True)
 
     logging.info("✅ Raw dataset cleaned.")

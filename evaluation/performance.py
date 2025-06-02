@@ -82,7 +82,7 @@ from typing import Optional, List
 def finalize_model_performance_df(
     df_long: pd.DataFrame,
     model_name: str,
-    databrick_id: Optional[int],
+    databrick_task_id: Optional[int],
     user_forecast_method_id: int,
     consumption_order: Optional[List[str]] = None
 ) -> pd.DataFrame:
@@ -93,7 +93,7 @@ def finalize_model_performance_df(
     Parameters:
     - df_long: DataFrame with columns ['pod_id','customer_id','consumption_type','RMSE','R2',...]
     - model_name: name of the forecasting model
-    - databrick_id: optional DataBrick warehouse/SQL endpoint ID
+    - databrick_task_id: optional DataBrick warehouse/SQL endpoint ID
     - user_forecast_method_id: ID of the user forecast method
     - consumption_order: optional list defining desired column order for consumption types;
         if None, uses the unique order in df_long.
@@ -137,7 +137,7 @@ def finalize_model_performance_df(
 
     # Add metadata columns
     pivot['ModelName']           = model_name
-    pivot['DataBrickID']         = databrick_id
+    pivot['DataBrickID']         = databrick_task_id
     pivot['UserForecastMethodID'] = user_forecast_method_id
 
     # Rename index columns to match example.csv
