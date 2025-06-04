@@ -72,3 +72,6 @@ SELECT TOP 15 *
 FROM dbo.StatisticalPerformanceMetrics
 WHERE DatabrickID = 1
 ORDER BY ID DESC;
+
+DELETE FROM dbo.PredictiveProfilingErrors;
+DELETE FROM dbo.PredictiveProfilingLogs;

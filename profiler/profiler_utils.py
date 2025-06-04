@@ -1,24 +1,26 @@
-# profiler_utils.py
-"""
-Refactored to use logger_factory.get_logger() for profiling logger selection.
-Avoids repetitive engine/config resolution.
-"""
-
 from uuid import uuid4
-from config.config_service import  is_profiling_enabled
+
+from db.utilities import load_yaml_config
+
+
+from profiler.timer.ProfilerTimer import get_logger, ProfilerTimer
 from profiler.profiler_run import run_context
-from utils.logger_factory import get_logger
-from profiler.timer.ProfilerTimer import ProfilerTimer
 
 
 class NoOpProfiler:
     pass
 
-def conditional_timer(module, function, message="", category="general", context=None):
-    profiling_enabled = is_profiling_enabled()
 
-    if profiling_enabled:
-        logger = get_logger()  # DB logger (MariaDB or SQLServer)
+def conditional_timer(module, function, message="", category="general", context=None):
+    config = load_yaml_config()
+    profiling_cfg = config.get("profiling", {})
+    enabled = profiling_cfg.get("enabled", False)
+
+    if enabled:
+        logger = get_logger(
+            engine=profiling_cfg.get("engine", "mariadb"),
+            env=profiling_cfg.get("environment", "dev")
+        )
         return ProfilerTimer(
             module=module,
             function=function,

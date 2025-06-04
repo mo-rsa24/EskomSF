@@ -50,8 +50,8 @@ LOCAL:
     datasource: UAT        # targets DEV data while profiling locally
 
 profiling:
-  enabled: false
-  log_errors: false
+  enabled: true
+  log_errors: true
   app_name: forecasting-engine
 
   categories: # https://www.notion.so/YAML-Based-Validation-System-for-Profiling-Categories-1ed650487ec480a0b9e8d6046a249e36?pvs=4#1ed650487ec480bebc92ca52fe76bb6e
