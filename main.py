@@ -2,8 +2,6 @@
 import argparse
 import logging
 
-import pandas as pd
-
 from config_loader import load_config  # your existing config loader module
 from data.dataset import ForecastDataset
 from profiler.profiler_run import run_context

@@ -1,6 +1,9 @@
 from datetime import datetime
 import os
 from typing import Optional, Any, Tuple
+
+import pandas as pd
+
 from models.algorithms.helper import _convert_to_model_performance_row, _convert_forecast_map_to_df, \
     _aggregate_forecast_outputs, _collect_metrics
 import joblib
@@ -17,7 +20,7 @@ from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 from db.queries import ForecastConfig
 from data.dml import convert_column, create_lag_features, prepare_lag_features, create_month_and_year_columns, \
-    prepare_features_and_target
+    prepare_features_and_target, create_month_and_year_columns_
 from hyperparameters import get_model_hyperparameters, get_pipeline_config, get_cv_config, load_hyperparameter_grid
 from models.algorithms.autoarima import evaluate_predictions
 from models.algorithms.utilities import load_hyperparameter_grid_rf, regressor_grid_for_pipeline, save_best_params_rf, \
@@ -38,13 +41,6 @@ warnings.filterwarnings("ignore", category=ConvergenceWarning)
 
 cache_dir = os.path.join(os.getcwd(), 'pipeline_cache')
 memory = joblib.Memory(location=cache_dir, verbose=0)
-
-def most_frequent_params(param_list):
-    """Return the most frequent parameter configuration."""
-    from collections import Counter
-    counter = Counter(tuple(sorted(p.items())) for p in param_list)
-    most_common = counter.most_common(1)[0][0]
-    return dict(most_common)
 
 
 def build_rf_pipeline(random_state: int = 42) -> Pipeline:
@@ -427,41 +423,163 @@ def is_series_valid(series: pd.Series, min_length: int = 3) -> Tuple[bool, str]:
         return False, "Too few observations"
     return True, "Series valid"
 
+
+def recursive_rf_forecast_for_pod(
+    model,
+    last_known_df: pd.DataFrame,
+    forecast_dates: List[pd.Timestamp],
+    target_col: str,
+    feature_columns: List[str],
+) -> pd.Series:
+    last_row = last_known_df.iloc[-1].copy()
+    lags = 3
+    preds = []
+    past_values = [last_known_df[target_col].dropna().iloc[-i] if len(last_known_df[target_col].dropna()) >= i else 0 for i in range(1, lags + 1)]
+
+    for i, date in enumerate(forecast_dates):
+        row = last_row.copy()
+        row['ReportingMonth'] = date
+        row['Month'] = date.month
+        row['Year'] = date.year
+        row['Month_sin'] = np.sin(2 * np.pi * date.month / 12)
+        row['Month_cos'] = np.cos(2 * np.pi * date.month / 12)
+        row['TimeIndex'] = (date.year - last_known_df['ReportingMonth'].min().year) * 12 + date.month
+
+        for lag in range(1, lags + 1):
+            value = past_values[-lag] if len(past_values) >= lag else 0
+            row[f"{target_col}_lag{lag}"] = value
+
+        row_df = pd.DataFrame([row])
+        row_df = row_df.reindex(columns=feature_columns, fill_value=0)
+        pred = model.predict(row_df)[0]
+        preds.append(pred)
+        past_values.append(pred)
+
+    return pd.Series(preds, index=forecast_dates)
+
+def forecast_recursively_with_global_models(
+    data: Dict[str, pd.DataFrame],
+    global_models: Dict[str, any],
+    model
+) -> pd.DataFrame:
+    full_df = data["full_df"]
+    feature_columns = data["feature_columns"]
+    forecast_dates = model.dataset.forecast_dates
+    consumption_types = getattr(model.dataset, 'variable_ids', None) or model.config.consumption_types
+
+    all_forecasts = []
+
+    for (customer_id, pod_id), pod_df in full_df.groupby(["CustomerID", "PodID"]):
+        for ctype in consumption_types:
+            if ctype not in pod_df.columns or pod_df[ctype].dropna().empty:
+                continue
+
+            model_for_type = global_models.get(ctype)
+            if model_for_type is None:
+                continue
+
+            preds = recursive_rf_forecast_for_pod(
+                model=model_for_type,
+                last_known_df=pod_df,
+                forecast_dates=forecast_dates,
+                target_col=ctype,
+                feature_columns=feature_columns
+            )
+
+            all_forecasts.extend([
+                {
+                    "CustomerID": customer_id,
+                    "PodID": pod_id,
+                    "ConsumptionType": ctype,
+                    "ReportingMonth": date,
+                    "Forecast": value
+                }
+                for date, value in preds.items()
+            ])
+
+    return pd.DataFrame(all_forecasts)
 def train_random_forest_globally_forecast_locally_with_aggregation(model: ForecastModel) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     Orchestrates global RF training and local forecasting, returns performance and forecast outputs.
     """
-    df, feature_columns = prepare_global_training_data(model)
-    global_models = train_global_rf_models(df, feature_columns, model)
-    rf_performance_df, forecast_combined_df = forecast_locally_with_global_models(df, feature_columns, global_models, model)
-    return rf_performance_df, forecast_combined_df
+    dict_  = prepare_global_training_data(model)
+    global_models = train_global_rf_models(dict_ ,model)
+    forecast_df = forecast_recursively_with_global_models(dict_,global_models,model)
+
+    # rf_performanc/e_df, forecast_combined_df = forecast_locally_with_global_models(df, feature_columns, global_models, model)
+    return pd.DataFrame({}), pd.DataFrame({})
 
 
-def prepare_global_training_data(model: ForecastModel) -> Tuple[pd.DataFrame, List[str]]:
+def prepare_global_training_data(model) -> Dict[str, pd.DataFrame]:
     """
-    Prepares the dataset for global model training: encodes IDs, creates lag and temporal features.
+    Prepares the dataset for global model training.
+    Returns full df, feature df, and feature column list.
     """
     consumption_types = getattr(model.dataset, 'variable_ids', None) or model.config.consumption_types
     df = model.dataset.processed_df.copy()
+
+    # Encode categorical IDs
     df['CustomerID_encoded'] = LabelEncoder().fit_transform(df['CustomerID'].astype(str))
     df['PodID_encoded'] = LabelEncoder().fit_transform(df['PodID'].astype(str))
-    df = create_month_and_year_columns(df)
+
+    # Temporal features
+    df = create_month_and_year_columns_(df)
+
+    # Lag features
     df = create_lag_features(df, model.config.selected_columns, lags=3)
-    df, lag_features = prepare_lag_features(df, consumption_types)
-    feature_columns = lag_features + ['Month', 'Year', 'CustomerID_encoded', 'PodID_encoded']
-    return df, feature_columns
+    df, lag_features = prepare_lag_features(df, lag_columns=consumption_types)
+
+    # Select feature columns (no metadata)
+    feature_columns = lag_features + ['Month_sin', 'Month_cos', 'TimeIndex', 'CustomerID_encoded', 'PodID_encoded']
+    feature_df = df[feature_columns]
+    feature_df = feature_df.loc[:, (feature_df != 0).any(axis=0)]
+    feature_columns = feature_df.columns.tolist()
+
+    return {
+        "full_df": df,
+        "feature_df": feature_df,
+        "feature_columns": feature_columns
+    }
+
+def build_future_feature_matrix(full_df, forecast_dates, feature_columns):
+    """
+    Creates a forecast feature matrix for all customer–pod combinations and forecast_dates.
+    """
+    records = []
+    for (customer_id, pod_id), group in full_df.groupby(['CustomerID', 'PodID']):
+        row = group.iloc[-1]  # last known row for this pod
+        for date in forecast_dates:
+            feature_row = row.copy()
+            feature_row['ReportingMonth'] = date
+            feature_row['Month'] = date.month
+            feature_row['Year'] = date.year
+            feature_row['Month_sin'] = np.sin(2 * np.pi * date.month / 12)
+            feature_row['Month_cos'] = np.cos(2 * np.pi * date.month / 12)
+            feature_row['TimeIndex'] = (date.year - full_df['ReportingMonth'].min().year) * 12 + date.month
+            records.append(feature_row)
+
+    future_df = pd.DataFrame(records)
+    future_df = future_df[feature_columns].fillna(0)
+    return future_df
 
 
-def train_global_rf_models(df: pd.DataFrame, feature_columns: List[str], model: ForecastModel) -> Dict[str, Any]:
+def train_global_rf_models(data: Dict[str, pd.DataFrame], model) -> Dict[str, any]:
     """
     Trains global Random Forest models for each consumption type.
     """
-    global_models = {}
     ufm_config = model.dataset.ufm_config
     mode = model.config.mode
     consumption_types = getattr(model.dataset, 'variable_ids', None) or model.config.consumption_types
+
+    full_df = data["full_df"]
+    feature_df = data["feature_df"]
+
+    trained_models = {}
     for consumption_type in consumption_types:
-        X, y = prepare_features_and_target(df, feature_columns, consumption_type)
+        valid_idx = full_df[consumption_type].notna()
+        y = full_df.loc[valid_idx, consumption_type]
+        X = feature_df.loc[valid_idx]
+
         if X.empty or y.empty:
             logger.warning(f"Skipping {consumption_type} due to insufficient data.")
             continue
@@ -478,12 +596,10 @@ def train_global_rf_models(df: pd.DataFrame, feature_columns: List[str], model: 
         os.makedirs(model_dir, exist_ok=True)
 
         pipeline = build_rf_pipeline()
-        best_model = None
         if mode == 'validation':
             cv = KFold(n_splits=3, shuffle=True, random_state=42)
             search = GridSearchCV(pipeline, param_grid, cv=cv, scoring='neg_mean_absolute_error', n_jobs=-1)
             search.fit(X, y)
-            best_model = search.best_estimator_
             save_best_params_rf(search.best_params_, model_dir, consumption_type)
         elif mode in ['train', 'test']:
             best_params = load_best_params_rf(model_dir, consumption_type)
@@ -491,14 +607,28 @@ def train_global_rf_models(df: pd.DataFrame, feature_columns: List[str], model: 
                 best_params = {k: v[0] for k, v in param_grid.items()}
             pipeline.set_params(**best_params)
             pipeline.fit(X, y)
-            best_model = pipeline
-            if mode == 'train':
-                joblib.dump({'model': best_model}, os.path.join(model_dir, f"{consumption_type}.pkl"))
-        global_models[consumption_type] = best_model
-    return global_models
+            trained_models[consumption_type] = pipeline
+    return trained_models
 
 
-def forecast_locally_with_global_models(df: pd.DataFrame, feature_columns: List[str], global_models: Dict[str, Any], model: ForecastModel) -> Tuple[pd.DataFrame, pd.DataFrame]:
+
+
+def forecast_globally_by_consumption_type(full_df: pd.DataFrame, future_df: pd.DataFrame, forecast_dates: List[pd.Timestamp], global_models: Dict[str, any], feature_columns: List[str]) -> pd.DataFrame:
+    all_predictions = []
+    unique_pairs = full_df[['CustomerID', 'PodID']].drop_duplicates().reset_index(drop=True)
+    for ctype, model in global_models.items():
+        preds = model.predict(future_df)
+        preds_df = pd.DataFrame({
+            "CustomerID": np.repeat(unique_pairs['CustomerID'].values, len(forecast_dates)),
+            "PodID": np.repeat(unique_pairs['PodID'].values, len(forecast_dates)),
+            "ReportingMonth": forecast_dates * len(unique_pairs),
+            "Forecast": preds,
+            "ConsumptionType": ctype
+        })
+        all_predictions.append(preds_df)
+    return pd.concat(all_predictions, ignore_index=True)
+
+def forecast_locally_with_global_models(data: Dict[str, pd.DataFrame], global_models: Dict[str, any], model) -> pd.DataFrame:
     """
     Performs local forecasts per customer/pod using globally trained models. Aggregates results.
     """

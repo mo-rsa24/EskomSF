@@ -158,6 +158,35 @@ def create_month_and_year_columns(df: pd.DataFrame, column: str = 'ReportingMont
     df['Year'] = df['ReportingMonth'].dt.year
     return df
 
+import numpy as np
+
+def create_month_and_year_columns_(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Enhances the dataframe with temporal features:
+    - Year
+    - Month
+    - Sine/Cosine month encodings for seasonality
+    - TimeIndex (optional): number of months since start
+
+    Assumes 'ReportingMonth' is a datetime column.
+    """
+    df.reset_index(inplace=True)
+    df['ReportingMonth'] = pd.to_datetime(df['ReportingMonth'])
+    df["Year"] = df["ReportingMonth"].dt.year
+    df["Month"] = df["ReportingMonth"].dt.month
+
+    # Add cyclical encoding for seasonality
+    df["Month_sin"] = np.sin(2 * np.pi * df["Month"] / 12)
+    df["Month_cos"] = np.cos(2 * np.pi * df["Month"] / 12)
+
+    # Optional: continuous time index (months since start)
+    df["TimeIndex"] = (
+        (df["ReportingMonth"].dt.year - df["ReportingMonth"].dt.year.min()) * 12
+        + df["ReportingMonth"].dt.month
+    )
+
+    return df
+
 def clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     # Remove CSV index column
     df = df.loc[:, ~df.columns.str.contains('^Unnamed')]
@@ -398,8 +427,6 @@ def  prepare_lag_features(df, lag_columns = None, lags=3, base_features=None):
             - A list of feature column names including base features and lag features.
     """
     # Use default base_features if none provided
-    if base_features is None:
-        base_features = ["Month", "Year"]
     if lag_columns is None:
         lag_columns = ['StandardConsumption']
     # Create lag features using the provided function (assumed to be defined elsewhere)
@@ -413,9 +440,9 @@ def  prepare_lag_features(df, lag_columns = None, lags=3, base_features=None):
         df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
     # Construct final list of feature columns
-    feature_columns = base_features + lag_feature_cols
 
-    return df, feature_columns
+
+    return df, lag_feature_cols
 
 def prepare_features_and_target(
     df: pd.DataFrame,
