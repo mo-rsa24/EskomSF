@@ -22,7 +22,7 @@ INNER JOIN
     [dbo].[UserForecastMethod] AS ufm ON dbt.UserForecastMethodID = ufm.UserForecastMethodID
 INNER JOIN
     [dbo].[DimForecastMethod] AS dfm ON ufm.ForecastMethodID = dfm.ForecastMethodID
-WHERE dbt.UserForecastMethodID =11
+WHERE ufm.UserForecastMethodID = 9
 ORDER BY
     dbt.CreationDate DESC;
 
@@ -35,9 +35,6 @@ ORDER BY
 -- Load the raw time-series data for forecasting.
 -- 🔁 Change 221 to the appropriate UserForecastMethodID (e.g., from query above).
 SELECT * FROM dbo.PredictiveInputData(96);
-
-
-
 -- ===============================
 -- 👁️ 2. VALIDATE POD → CUSTOMER MAPPINGS
 -- ===============================

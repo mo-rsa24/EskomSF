@@ -62,7 +62,7 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
 
-def prepare_global_training_data(model) -> Dict[str, pd.DataFrame]:
+def prepare_global_training_data(model) -> Dict[str, Any]:
    """
    Prepares the dataset for global model training.
    Returns full df, feature df, and feature column list.
@@ -279,15 +279,9 @@ def build_forecast_rows(
 
             # --- 1) In‐sample prediction & metrics (last window of actuals) ---
             series = pod_df.set_index("ReportingMonth")[ctype]
-            # Use last min(steps, len(series)) points
             evaluation_window = min(len(series), len(forecast_dates))
             test_actual = series[-evaluation_window:]
 
-            # In‐sample “rolling” prediction: predict same indices
-            # We can do: X_in = feature_columns of the final window
-            # But simplest: train‐on‐all, then forecast back only the last segment
-            # However, to mirror autoarima exactly, we do:
-            #    in_sample_preds = rf_model.predict(X corresponding to test_actual.index)
             df_idx = pod_df.set_index("ReportingMonth")
             X_in = df_idx.loc[test_actual.index, feature_columns]
             test_pred = rf_model.predict(X_in)
@@ -468,8 +462,7 @@ def run_rf_forecast_pipeline(
     # 1) Global training data
     data_dict = prepare_global_training_data(model)
     full_df: pd.DataFrame = data_dict["full_df"]
-    feature_df: pd.DataFrame = data_dict["feature_df"]
-    feature_columns: List[str] = data_dict["feature_columns"]
+    feature_columns: List[str] = data_dict.get("feature_columns")
 
     # 2) Train/load global models
     logger.info("🔧 Training/loading global RF models …")

@@ -250,15 +250,9 @@ def extract_xgboost_params(param_str: str) -> Tuple[float, float, float,float ,f
         return (0, 0, 0, 0, 0)
 
 
-def extract_random_forest_params(param_str: str) -> Tuple[int, int, int, int, int, bool]:
+def extract_random_forest_params(param_str: str) -> tuple[int, ...]:
     try:
-        # Extract the content inside the first pair of parentheses.
-        match = re.search(r'\((.*?)\)', param_str)
-        if not match:
-            raise ValueError("Input string does not contain parentheses in the expected format.")
-
-        # Split the extracted string by commas.
-        parts = [part.strip() for part in match.group(1).split(',')]
+        parts = [part.strip() for part in param_str.split(',')]
         if len(parts) != 6:
             raise ValueError("Expected exactly 6 parameters.")
 
@@ -465,6 +459,19 @@ def convert_column(df, col: str = 'PodID', to_type: type(str) = str):
     df = df.astype({col: to_type})
     return df
 
+
+
+def create_lag_features_(df, lag_columns, lags):
+    """
+    Instead of forecasting previous months
+     instead of 1,2,3 try 12, 13,14 - until 24
+
+    try 1-24 vs 12-24
+0    """
+    for col in lag_columns:
+            for lag in range(12,lags+1):
+                df[f"{col}_lag{lag}"]=df[col].shift(lag)
+    return df
 
 def create_lag_features(df, lag_columns, lags):
     for col in lag_columns:

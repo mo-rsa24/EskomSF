@@ -1,27 +1,23 @@
 from pmdarima import auto_arima
 from sklearn.model_selection import TimeSeriesSplit
-from statsmodels.tsa.arima.model import ARIMA, ARIMAResults
+from statsmodels.tsa.arima.model import ARIMA
 import warnings
 
 from statsmodels.tools.sm_exceptions import ConvergenceWarning
-from statsmodels.tsa.statespace.sarimax import SARIMAX, SARIMAXResults
+from statsmodels.tsa.statespace.sarimax import SARIMAX
 
 from data.dml import *
 import joblib
 import pandas as pd
-from typing import Tuple, Union, Optional, NamedTuple
+from typing import Tuple, NamedTuple
 
-from data.lag_safety import validate_lag_vs_horizon, log_lag_strategy
-from db.queries import ForecastConfig
 from db.error_logger import insert_profiling_error
 from evaluation.performance import *
 from hyperparameters import get_model_hyperparameters
-from models.algorithms.helper import _aggregate_forecast_outputs, _convert_to_model_performance_row, \
-    _convert_forecast_map_to_df, _get_customer_data, _collect_metrics, _plot_forecast, _apply_log, \
-    extract_exogenous_features
+from models.algorithms.helper import _convert_to_model_performance_row, \
+    _convert_forecast_map_to_df, _get_customer_data, _collect_metrics, _apply_log
 from models.algorithms.utilities import prepare_time_series_data, evaluate_predictions
 from models.base import ForecastModel
-from sa_holiday_loader import get_sa_holidays
 
 # Setup logger with basic configuration
 logging.basicConfig(level=logging.INFO)
@@ -40,11 +36,6 @@ def fit_time_series_model(series, order, seasonal_order, log=False, exog=None):
     if seasonal_order:
         return train_sarima_model(series, order, seasonal_order, log, exog)
     return train_arima_model(series, order, log, exog)
-
-def train_auto_arima(series, exog, seasonal=True, m=12):
-    model = auto_arima(series, exogenous=exog, seasonal=seasonal, m=m,
-                       stepwise=True, trace=True, error_action='ignore', suppress_warnings=True)
-    return model
 
 def train_arima_model(series: pd.Series, order: Tuple[int, int, int], log: bool = False, endog: Optional[pd.DataFrame] = None, exog: Optional[pd.DataFrame] = None):
     logger.info("🔧 Training ARIMA with exog")
@@ -71,75 +62,6 @@ def predict_time_series_model(model, steps, return_ci=False, log = False):
         conf_int = forecast.conf_int()
         return mean_forecast, conf_int
     return mean_forecast
-
-def save_model(model, path):
-    joblib.dump(model, path)
-
-def load_model(path):
-    return joblib.load(path)
-
-
-def evaluate_model_on_test(model_path: str, n_periods: int) -> pd.Series:
-    model = load_model(model_path)
-    forecast = predict_time_series_model(model,n_periods)
-    return forecast
-
-def _load_or_tune_params(model_dir, consumption_type, series, default_order, default_seasonal, log, mode):
-    params_path = os.path.join(model_dir, f"{consumption_type}_params.pkl")
-
-    if mode == 'validation':
-        if os.path.exists(params_path):
-            params = joblib.load(params_path)
-            best_order, best_seasonal = params['order'], params['seasonal_order']
-            logger.info(f"🔁 Loaded existing ARIMA params for {consumption_type}: {best_order}, {best_seasonal}")
-        else:
-            logger.info(f"🔍 Tuning ARIMA params for {consumption_type} during validation mode")
-            param_grid = [default_order, (1, 1, 1), (2, 1, 2)]
-            seasonal_grid = [default_seasonal, None, (1, 0, 1, 12)]
-            best_order, best_seasonal = tune_arima_with_cv(series, param_grid, seasonal_grid, log)
-            joblib.dump({'order': best_order, 'seasonal_order': best_seasonal}, params_path)
-            logger.info(f"💾 Saved tuned ARIMA params for {consumption_type}: {best_order}, {best_seasonal}")
-    else:
-        if os.path.exists(params_path):
-            params = joblib.load(params_path)
-            best_order, best_seasonal = params['order'], params['seasonal_order']
-            logger.info(f"🔁 Loaded existing ARIMA params for {consumption_type}: {best_order}, {best_seasonal}")
-        else:
-            best_order, best_seasonal = default_order, default_seasonal
-            logger.info(f"⚙️ Using default ARIMA params for {consumption_type}: {best_order}, {best_seasonal}")
-
-    return best_order, best_seasonal
-
-def tune_arima_with_cv(series: pd.Series, param_grid: List[Tuple[int, int, int]], seasonal_grid: List[Optional[Tuple[int, int, int, int]]], log: bool = False, n_splits: int = 3) -> Tuple[Tuple[int, int, int], Optional[Tuple[int, int, int, int]]]:
-    """
-    Perform cross-validation to select the best ARIMA or SARIMA parameters.
-    """
-    best_score = float('inf')
-    best_params = (None, None)
-    tscv = TimeSeriesSplit(n_splits=n_splits)
-
-    for order in param_grid:
-        for seasonal_order in seasonal_grid:
-            rmse_scores = []
-            for train_idx, val_idx in tscv.split(series):
-                train_series = series.iloc[train_idx]
-                val_series = series.iloc[val_idx]
-                try:
-                    model = fit_time_series_model(train_series, order, seasonal_order, log)
-                    preds = predict_time_series_model(model, order, len(val_series), seasonal_order, log)
-                    metrics, _ = evaluate_predictions(val_series, preds)
-                    rmse_scores.append(metrics['RMSE'])
-                except Exception as e:
-                    logger.warning(f"Failed combo {order}, {seasonal_order}: {e}")
-                    continue
-            if rmse_scores:
-                avg_rmse = sum(rmse_scores) / len(rmse_scores)
-                if avg_rmse < best_score:
-                    best_score = avg_rmse
-                    best_params = (order, seasonal_order)
-
-    logger.info(f"✅ Best ARIMA config: {best_params} with RMSE: {best_score:.2f}")
-    return best_params
 
 @profiled_function(category="model_training",enabled=profiling_switch.enabled)
 def forecast_arima_for_single_customer(model: ForecastModel):
@@ -299,7 +221,7 @@ def forecast_for_podel_id(
             )
             forecast = pd.Series([0] * steps, index=forecast_horizon)
             data.append(_collect_metrics(pod_id, customer_id, consumption_type, forecast))
-            logger.warning(meta["message"])
+            logger.info(meta["message"])
             continue
 
         # Check for large time gap
@@ -323,7 +245,9 @@ def forecast_for_podel_id(
                     severity=meta["severity"],
                     component=meta["component"]
                 )
-                logger.warning(f"⛔ Forecast gap too large for {consumption_type} @ Pod {pod_id}. Skipping.")
+                logger.info(f"⛔ Forecast gap too large for {consumption_type} @ Pod {pod_id}. Skipping.")
+                forecast = pd.Series([0] * steps, index=forecast_horizon)
+                data.append(_collect_metrics(pod_id, customer_id, consumption_type, forecast))
                 continue
             elif gap_handling == "fill":
                 total_steps = gap_months
