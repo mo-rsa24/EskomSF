@@ -18,5 +18,8 @@ def insert_profiling_error(*, log_id, error, traceback, error_type, severity, co
             severity=severity,
             component=component
         )
-    except Exception as e:
-        logging.warning(f"[Profiling] Failed to insert error log: {e}")
+    except ImportError as err:
+        logging.warning(f"[Profiling] Import failed: {err}")
+    except Exception:
+        logging.exception("[Profiling] Failed to insert error log.")
+

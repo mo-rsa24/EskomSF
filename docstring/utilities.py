@@ -49,7 +49,7 @@ def profiled_function(
             )
             try:
                 message = message_template.format(**context)
-            except Exception as e:
+            except Exception:
                 message = f"[Profiler] Failed to format message for {func.__name__}"
             module = f"{func.__module__.replace('.','/')}.py"
             timer = conditional_timer(

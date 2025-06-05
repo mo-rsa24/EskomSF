@@ -21,7 +21,6 @@ logging.basicConfig(level=logging.INFO)
 
 
 @profiled_function(category="database_call", enabled=profiling_switch.enabled)
-@databricks_safe(error_key="UnknownError")
 def load_and_prepare_data(ufm_config: ForecastConfig, rows=5000, actual=False, save=False, spark=None) -> pd.DataFrame:
     """
         Function: Loads and prepares predictive input dataset either from a CSV file or by fetching it via a function.

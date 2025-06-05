@@ -1,6 +1,6 @@
 ModelConfigMissing:
   code: E6001
-  message: "🪹 Missing required configuration in model: {field}"
+  message: "Missing required configuration in model: {field}"
   severity: high
   component: model_training
 
@@ -10,59 +10,70 @@ DBConnectionError:
   severity: high
   component: db_connection_pool
 
+ForecastGapTooLarge:
+  message: "Forecast gap too large for Pod {pod_id} where its last observed date is {last_observed} and we're trying to forecast for {requested_start}"
+  code: E6006
+  severity: high
+  component: model_training
+
+FlatForecast:
+  message: "Filled in gap of {gap_months} months from {last_date} to {forecast_start}. Forecast for Pod {pod_id}, {consumption_type} is flat. Model may be underfit or data insufficient. Please try different parameters (e.g (2,1,2)) or a different model"
+  code: E6009
+  severity: high
+  component: model_training
 
 InvalidSeries:
   code: E6002
-  message: "🪹 Input series is empty or invalid for Pod ID: {pod_id} and Consumption Type: {consumption_type}"
+  message: "Input series is empty or invalid for Pod ID: {pod_id} and Consumption Type: {consumption_type}"
   severity: medium
   component: model_training
 
 ConfigMissing:
   code: E7001
-  message: "☣️ Missing or invalid configuration key: {field}"
+  message: "Missing or invalid configuration key: {field}"
   severity: high
   component: config_loader
 
 ProfilerInsertFailure:
   code: E9001
-  message: "☣️ Failed to insert profiler log: {exception}"
+  message: "☣Failed to insert profiler log: {exception}"
   severity: medium
   component: profiler_logger
 
 
 ModelFitFailure:
   code: E6003
-  message: "🪹 Model training failed: {exception}"
+  message: "Model training failed: {exception}"
   severity: critical
   component: model_training
 
 MissingCSV:
   code: E4001
-  message: "🚫 CSV file not found for method: {forecast_method_name}"
+  message: "CSV file not found for method: {forecast_method_name}"
   severity: medium
   component: data_loading
 
 EmptyQueryResult:
   code: E3001
-  message: "🚫 No data returned for forecast method {forecast_method_id}"
+  message: "No data returned for forecast method {forecast_method_id}"
   severity: high
   component: database_call
 
 EmptyConfigResult:
   code: E3002
-  message: "🚫 No user forecast method data returned for Databricks Task ID: {databrick_task_id}"
+  message: "No user forecast method data returned for Databricks Task ID: {databrick_task_id}"
   severity: high
   component: database_call
 
 PandasLoadError:
   code: E5001
-  message: "❌ Failed to process DataFrame: {exception}"
+  message: "Failed to process DataFrame: {exception}"
   severity: high
   component: dataframe_ops
 
 SchemaMismatch:
   code: E2001
-  message: "❌ Schema mismatch or required column missing: {column}"
+  message: "Schema mismatch or required column missing: {column}"
   severity: high
   component: validation
 
@@ -105,6 +116,6 @@ ParameterGridInvalid:
 
 UnknownError:
   code: E9999
-  message: "❌ Unhandled exception: {exception}"
+  message: "Unhandled exception: {exception}"
   severity: critical
   component: global

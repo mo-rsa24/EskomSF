@@ -86,6 +86,7 @@ class ProfilerTimer:
 
         except Exception as logging_error:
             global_logger.warning(f"[Profiler] Logging failed for {self.function}: {logging_error}")
+            raise
 
 
     @staticmethod

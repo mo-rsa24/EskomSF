@@ -47,7 +47,7 @@ LOCAL:
     database: "PLAYGROUND"
   profiling_cfg:
     engine: sqlserver        # or sqlserver
-    datasource: UAT        # targets DEV data while profiling locally
+    datasource: DEV        # targets DEV data while profiling locally
 
 profiling:
   enabled: false

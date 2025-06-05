@@ -4,8 +4,9 @@ from typing import Optional, Any, Tuple
 
 import pandas as pd
 
+from hyperparameters import get_model_hyperparameters
 from models.algorithms.helper import _convert_to_model_performance_row, _convert_forecast_map_to_df, \
-    _aggregate_forecast_outputs, _collect_metrics
+   _aggregate_forecast_outputs, _collect_metrics
 import joblib
 from sklearn.exceptions import ConvergenceWarning
 from sklearn.pipeline import Pipeline
@@ -13,18 +14,15 @@ from evaluation.performance import *
 import numpy as np
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import (
-    StratifiedKFold, GridSearchCV, KFold)
+   StratifiedKFold, GridSearchCV, KFold)
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.feature_selection import RFECV
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 from db.queries import ForecastConfig
 from data.dml import convert_column, create_lag_features, prepare_lag_features, create_month_and_year_columns, \
-    prepare_features_and_target, create_month_and_year_columns_
-from hyperparameters import get_model_hyperparameters, get_pipeline_config, get_cv_config, load_hyperparameter_grid
-from models.algorithms.autoarima import evaluate_predictions
-from models.algorithms.utilities import load_hyperparameter_grid_rf, regressor_grid_for_pipeline, save_best_params_rf, \
-    load_best_params_rf
+   prepare_features_and_target, create_month_and_year_columns_
+from models.algorithms.utilities import evaluate_predictions
 from models.base import ForecastModel
 
 # Setup logger with basic configuration
@@ -42,674 +40,472 @@ warnings.filterwarnings("ignore", category=ConvergenceWarning)
 cache_dir = os.path.join(os.getcwd(), 'pipeline_cache')
 memory = joblib.Memory(location=cache_dir, verbose=0)
 
-
-def build_rf_pipeline(random_state: int = 42) -> Pipeline:
-    """
-    Construct a baseline pipeline for Random Forest using external configuration.
-
-    Returns:
-        Pipeline: The constructed pipeline.
-    """
-    pipeline_config = get_pipeline_config("randomforest")
-    imputer_strategy = pipeline_config.get("imputer_strategy", "mean")
-    rfecv_config = pipeline_config.get("rfecv", {"step": 0.1, "cv": 3, "scoring": "neg_mean_absolute_error"})
-
-    pipeline = Pipeline([
-        ('imputer', SimpleImputer(strategy=imputer_strategy)),
-        ('scaler', StandardScaler()),
-        ('feature_selection', RFECV(
-            estimator=RandomForestRegressor(random_state=random_state),
-            step=rfecv_config.get("step", 0.1),
-            cv=rfecv_config.get("cv", 3),
-            scoring=rfecv_config.get("scoring", "neg_mean_absolute_error")
-        )),
-        ('regressor', RandomForestRegressor(random_state=random_state))
-    ])
-    return pipeline
-
-def random_forest(
-    X: pd.DataFrame,
-    y: pd.Series,
-    mode: str,
-    model_dir: str,
-    consumption_type: str,
-    param_grid: Optional[Dict]=None,
-    scoring: str='neg_mean_absolute_error',
-    forecast_dates: Optional[pd.DatetimeIndex] = None,
-    feature_columns: Optional[List[str]] = None
-) -> (Pipeline, pd.Series, Dict[str,float], Dict[str,float]):
-    """
-    1) If mode='validation':
-         - Run nested or single-level cross-validation to find best params.
-         - It picks the best parameters from that single training set, then re-fits on that same set, and calls it a day.
-         - Save best params to disk.
-         - Train final pipeline on sub_train => Forecast on validation => Return metrics.
-    2) If mode='train':
-         - Load best params if present, else default.
-         - Train final pipeline on sub_train+validation => optional check => Save final model.
-    3) If mode='test':
-         - Load best params
-         - Train on sub_train+validation => Forecast on final_test => Return metrics.
-    Returns: (model, forecast, metrics, baseline_metrics)
-    """
-
-    # Early exit if no data
-    if X.empty or y.empty:
-        logging.warning(f"No data for consumption_type={consumption_type}. Skipping.")
-        return None, pd.Series([], dtype=float), {}, {}
-
-    # Create model dir if needed
-    if not os.path.exists(model_dir):
-        os.makedirs(model_dir)
-
-    if mode == 'validation':
-        # 1) Possible load or define parameter grid
-        if param_grid is None:
-            raw_grid = load_hyperparameter_grid_rf(None)
-            param_grid = regressor_grid_for_pipeline(raw_grid)
-
-        # 2) Simple approach: single-level CV or nested. Here we do single-level for brevity.
-        pipeline = build_rf_pipeline()
-        inner_cv = KFold(n_splits=3, shuffle=True, random_state=42)
-
-        grid_search = GridSearchCV(
-            pipeline,
-            param_grid=param_grid,
-            cv=inner_cv,
-            scoring=scoring,
-            n_jobs=-1
-        )
-        grid_search.fit(X, y)
-        best_params = grid_search.best_params_
-
-        # Save best_params to file
-        save_best_params_rf(best_params, model_dir, consumption_type)
-
-        # Evaluate on the same dataset for now (since this is just sub_train or sub_train subset)
-        best_model = grid_search.best_estimator_
-        y_pred = best_model.predict(X)
-        metrics, baseline_metrics = evaluate_predictions(y, y_pred)
-
-        return best_model, pd.Series(y_pred, index=X.index), metrics, baseline_metrics, pd.Series([], dtype=float)
-    elif mode == 'train':
-        # 1) Load best_params if exist
-        best_params = load_best_params_rf(model_dir, consumption_type)
-        if best_params is None:
-            # Build defaults
-            default_grid = load_hyperparameter_grid_rf(None)
-            default_grid = regressor_grid_for_pipeline(default_grid)
-            # e.g. pick the first in each list
-            best_params = {k: v[0] for k, v in default_grid.items() if k.startswith('regressor__')}
-
-        # 2) Final pipeline, set best params
-        pipeline = build_rf_pipeline()
-        pipeline.set_params(**best_params)
-        pipeline.fit(X, y)
-
-        # 3) Optionally evaluate in-sample
-        y_pred = pipeline.predict(X)
-        metrics, baseline_metrics = evaluate_predictions(y, y_pred)
-
-        # 4) Save final model
-        final_model_path = os.path.join(model_dir, f"{consumption_type}.pkl")
-        metadata = {
-            'timestamp': datetime.now().isoformat(),
-            'hyperparams': best_params
-        }
-        joblib.dump({'model': pipeline, 'metadata': metadata}, final_model_path)
-        logging.info(f"Saved final model to {final_model_path}")
-
-        return pipeline, pd.Series(y_pred, index=X.index), metrics, baseline_metrics, pd.Series([], dtype=float)
-    elif mode == 'test':
-        # 1) Load best_params
-        best_params ={}
-        # 1) Try loading saved model
-        model_path = os.path.join(model_dir, f"{consumption_type}.pkl")
-        if os.path.exists(model_path):
-            logging.info(f"🔁 Loading saved RF model for {consumption_type} from {model_path}")
-            saved = joblib.load(model_path)
-            pipeline = saved.get('model', saved)
-        else:
-            # fallback: train on full data
-            logging.warning("No saved model found. Training on full data for test.")
-            best_params = load_best_params_rf(model_dir, consumption_type)
-            pipeline = build_rf_pipeline()
-            pipeline.set_params(**best_params)
-            pipeline.fit(X, y)
-
-        # 2) In-sample evaluation
-        y_in = pipeline.predict(X)
-        metrics, baseline_metrics = evaluate_predictions(y, y_in)
-
-        # 3) Future forecast
-        try:
-            future_X = make_future_features(forecast_dates, feature_columns)
-            y_future = pipeline.predict(future_X)
-            future_forecast = pd.Series(y_future, index=forecast_dates)
-        except Exception as e:
-            logging.error(f"Failed to build future features or predict: {e}")
-            future_forecast = pd.Series([], dtype=float)
-
-        return pipeline, pd.Series(y_in, index=X.index), metrics, baseline_metrics, future_forecast
-    else:
-        raise ValueError("mode must be one of ['validation', 'train', 'test']")
-
-def train_random_forest_for_podel_id(
-    df: pd.DataFrame,
-    feature_columns: List[str],
-    consumption_types: List[str],
-    ufm_config: ForecastConfig,
-    customer_id: str,
-    pod_id: str,
-    mode: str = 'train',  # 'validation','train','test'
-    param_grid: Optional[Dict] = None,
-    forecast_dates: Optional[pd.DatetimeIndex] = None  # <-- ADD THIS
-) -> PodIDPerformanceData:
-    """
-    Simpler function that:
-      1) Loops over each consumption_type.
-      2) Prepares X,y via a helper.
-      3) Calls train_or_validate_rf(...)
-      4) Aggregates results in a PodIDPerformanceData object.
-
-    The entire logic for cross-validation, loading hyperparams, saving final model
-    is inside train_or_validate_rf(...), so we keep this short & modular.
-    """
-
-    logging.info("Random Forest forecasting for Pod=%s, mode=%s", pod_id, mode)
-    metric_keys = {'RMSE', 'MAE', 'R2'}
-    data_rows = []
-
-    # Directory structure for saving/loading
-    model_dir = os.path.join(
-        "model_configuration",
-        ufm_config.forecast_method_name,
-        f"customer_{customer_id}",
-        f"pod_{pod_id}"
-    )
-    os.makedirs(model_dir, exist_ok=True)
-
-    for consumption_type in consumption_types:
-        # Step 1) Prepare the dataset
-        X, y= prepare_features_and_target(df, feature_columns, consumption_type)
-        if X.empty or y.empty:
-            logging.info(f"No data for consumption type = {consumption_type}. Skipping")
-            continue
-
-        # Step 2) Train or Validate or Test
-        model, in_sample_forecast, metrics, baseline_metrics, future_forecast = random_forest(X, y,
-            mode=mode,
-            model_dir=model_dir,
-            consumption_type=consumption_type,
-            param_grid=param_grid,
-            forecast_dates=forecast_dates,
-            feature_columns=feature_columns)
-
-        # Step 3) Aggregate results
-        row = {
-            'pod_id': pod_id,
-            'customer_id': customer_id,
-            'consumption_type': consumption_type,
-            'in_sample_forecast': in_sample_forecast,
-            'forecast': future_forecast
-        }
-        for key in metric_keys:
-            row[key] = metrics.get(key, None)
-            row[f"{key}_baseline"] = baseline_metrics.get(key, None)
-
-        data_rows.append(row)
-
-    # Convert to PodIDPerformanceData
-    performance_df = pd.DataFrame(data_rows)
-    pod_performance_data = PodIDPerformanceData(
-        pod_id=pod_id,
-        forecast_method_name=ufm_config.forecast_method_name,
-        customer_id=customer_id,
-        user_forecast_method_id=ufm_config.user_forecast_method_id,
-        performance_data_frame=performance_df
-    )
-    return pod_performance_data
-
-# Add near top of random_forest.py:
-
-def make_future_features(
-    forecast_dates: pd.DatetimeIndex,
-    feature_columns: List[str]
-) -> pd.DataFrame:
-    """
-    Build a simplistic feature matrix for future dates.
-    Here we just produce zeros (or you can implement lag-based).
-    """
-    # zero‐fill all features for each future date
-    return pd.DataFrame(0, index=forecast_dates, columns=feature_columns)
-
-
-def train_random_forest_for_single_customer(model: ForecastModel) -> pd.DataFrame:
-    """
-    Train Random Forest models for a single customer across multiple pods using the given ForecastModel instance.
-
-    This function performs the following steps:
-      1. Extracts required parameters (data, customer id, config, selected columns, consumption types, mode) from the model.
-      2. Sets default values for selected_columns, consumption_types, and lag_features if not already provided.
-      3. Preprocesses the DataFrame by converting date columns and customer IDs.
-      4. Filters the data for the target customer and sorts it by PodID.
-      5. Iterates over each unique pod ID:
-          - Creates lag features and prepares the feature set.
-          - Calls the per-pod training function to obtain performance metrics.
-          - Aggregates results into a performance container.
-      6. Combines and returns the performance results as a long-format DataFrame.
-
-    Args:
-        model (ForecastModel): ForecastModel instance that encapsulates the dataset, configuration,
-                               customer ID, selected columns, consumption types, and mode.
-
-    Returns:
-        pd.DataFrame: Aggregated performance metrics and forecasts for each pod.
-
-    Raises:
-        ValueError: If the dataset is empty or necessary data fields are missing.
-    """
-    df: pd.DataFrame = model.dataset.processed_df
-    # customer_ids, variable_ids = model.dataset.parse_identifiers()
-    # customer_id: str = customer_ids[0]
-    customer_id: str = "6632769797"
-    ufm_config = model.dataset.ufm_config
-    mode: str = model.config.mode
-
-    # Set default feature/consumption columns if not provided.
-    selected_columns: List[str] = model.config.selected_columns if model.config.selected_columns is not None else \
-        ["StandardConsumption", "OffpeakConsumption", "PeakConsumption"]
-    consumption_types: List[str] = model.config.consumption_types if model.config.consumption_types is not None else [
-        "PeakConsumption", "StandardConsumption", "OffPeakConsumption", "Block1Consumption",
-        "Block2Consumption", "Block3Consumption", "Block4Consumption", "NonTOUConsumption"
-    ]
-    lag_features: List[str] = model.config.selected_columns if model.config.selected_columns is not None else ['StandardConsumption']
-
-    logger.info(f"💡 [RF] Starting training for customer {customer_id} in mode '{mode}'.")
-
-    # Retrieve hyperparameters for Random Forest from the config (or defaults).
-    param_grid: Any = get_model_hyperparameters("randomforest", ufm_config.model_parameters)
-    param_grid = regressor_grid_for_pipeline(param_grid)
-    logger.info(f"💡 [RF] Hyperparameters: {param_grid}")
-
-    # Preprocess the DataFrame: set month/year columns and convert customer IDs.
-    df = create_month_and_year_columns(df)
-    customer_data: pd.DataFrame = df[df['CustomerID'] == customer_id].sort_values('PodID')
-    customer_data = convert_column(customer_data)
-
-    # Initialize a container for performance metrics.
-    consumer_performance_data = CustomerPerformanceData(customer_id=customer_id, columns=selected_columns)
-
-    # Determine unique Pod IDs for the customer.
-    unique_pod_ids: List[str] = list(customer_data["PodID"].unique())
-    logger.info(f"📊 [RF] Found {len(unique_pod_ids)} pod(s) for customer {customer_id}.")
-
-    forecast_map: Dict[str, pd.Series] = {}
-    all_forecasts = []
-    random_forest_rows: List[ModelPodPerformance] = []
-    # Process each pod.
-    for pod_id in unique_pod_ids:
-        # Filter pod data and sort by ReportingMonth.
-        podel_df: pd.DataFrame = customer_data[customer_data["PodID"] == pod_id].sort_values('ReportingMonth')
-        podel_df = create_lag_features(podel_df, lag_features, lags=3)
-        podel_df, feature_columns = prepare_lag_features(podel_df, lag_features)
-
-        performance_data = train_random_forest_for_podel_id(
-            podel_df,
-            feature_columns,
-            consumption_types,
-            ufm_config,
-            customer_id,
-            pod_id,
-            mode=mode,
-            param_grid=param_grid,
-            forecast_dates=model.dataset.forecast_dates
-        )
-        consumer_performance_data.pod_by_id_performance.append(performance_data)
-
-        # now convert the long-format DataFrame to a wide row:
-        df_long = performance_data.performance_data_frame
-        wide = finalize_model_performance_df(
-            df_long,
-            model_name=ufm_config.forecast_method_name,
-            databrick_id=getattr(ufm_config, 'databrick_task_id', None),
-            user_forecast_method_id=ufm_config.user_forecast_method_id
-        )
-        # df_long has columns ['consumption_type','RMSE','R2', ...]
-        metrics: Dict[str, Dict[str, float]] = {
-            row.consumption_type: {"RMSE": row.RMSE, "R2": row.R2}
-            for row in df_long.itertuples(index=False)
-        }
-
-        # --- 2) instantiate the dataclass ---
-        mpp = ModelPodPerformance(
-            ModelName=ufm_config.forecast_method_name,
-            CustomerID=customer_id,
-            PodID=pod_id,
-            DataBrickID=getattr(ufm_config, "databrick_task_id", None),
-            UserForecastMethodID=ufm_config.user_forecast_method_id,
-            metrics=metrics
-        )
-        random_forest_rows.append(mpp)
-
-        # Consumption Forecast
-        forecast_map = df_long.set_index("consumption_type")["forecast"].to_dict()
-        forecast_df = build_forecast_df(
-            forecast_map,
-            customer_id,
-            pod_id,
-            list(metrics.keys()),  # exactly the types we have
-            ufm_config.user_forecast_method_id
-        )
-        all_forecasts.append(forecast_df)
-        logger.info(f"✅ [RF] Processed pod {pod_id} for customer {customer_id}.")
-
-    # Aggregate the per-pod performance results.
-    all_performance_df: pd.DataFrame = consumer_performance_data.get_pod_performance_data()
-    random_forest_rows_performance_df = pd.DataFrame([m.to_row() for m in random_forest_rows])
-    final_performance_df = consumer_performance_data.convert_pod_id_performance_data(all_performance_df)
-    forecast_combined_df = pd.concat(all_forecasts, ignore_index=True)
-    pod_id_performance_data: pd.DataFrame = consumer_performance_data.convert_pod_id_performance_data(
-        all_performance_df)
-    logger.info("✅ [RF] Forecast aggregation complete.")
-    return pod_id_performance_data
-
 def is_series_valid(series: pd.Series, min_length: int = 3) -> Tuple[bool, str]:
-    if series.isnull().all():
-        return False, "All NaN values"
-    if series.nunique() <= 1:
-        return False, "Constant or all zero series"
-    if len(series) < min_length:
-        return False, "Too few observations"
-    return True, "Series valid"
+   if series.isnull().all():
+       return False, "All NaN values"
+   if series.nunique() <= 1:
+       return False, "Constant or all zero series"
+   if len(series) < min_length:
+       return False, "Too few observations"
+   return True, "Series valid"
 
+import os
+import logging
+import joblib
+import pandas as pd
+import numpy as np
 
-def recursive_rf_forecast_for_pod(
-    model,
-    last_known_df: pd.DataFrame,
-    forecast_dates: List[pd.Timestamp],
-    target_col: str,
-    feature_columns: List[str],
-) -> pd.Series:
-    last_row = last_known_df.iloc[-1].copy()
-    lags = 3
-    preds = []
-    past_values = [last_known_df[target_col].dropna().iloc[-i] if len(last_known_df[target_col].dropna()) >= i else 0 for i in range(1, lags + 1)]
+from typing import Dict, Tuple, List, Any
+from sklearn.ensemble import RandomForestRegressor
 
-    for i, date in enumerate(forecast_dates):
-        row = last_row.copy()
-        row['ReportingMonth'] = date
-        row['Month'] = date.month
-        row['Year'] = date.year
-        row['Month_sin'] = np.sin(2 * np.pi * date.month / 12)
-        row['Month_cos'] = np.cos(2 * np.pi * date.month / 12)
-        row['TimeIndex'] = (date.year - last_known_df['ReportingMonth'].min().year) * 12 + date.month
-
-        for lag in range(1, lags + 1):
-            value = past_values[-lag] if len(past_values) >= lag else 0
-            row[f"{target_col}_lag{lag}"] = value
-
-        row_df = pd.DataFrame([row])
-        row_df = row_df.reindex(columns=feature_columns, fill_value=0)
-        pred = model.predict(row_df)[0]
-        preds.append(pred)
-        past_values.append(pred)
-
-    return pd.Series(preds, index=forecast_dates)
-
-def forecast_recursively_with_global_models(
-    data: Dict[str, pd.DataFrame],
-    global_models: Dict[str, any],
-    model
-) -> pd.DataFrame:
-    full_df = data["full_df"]
-    feature_columns = data["feature_columns"]
-    forecast_dates = model.dataset.forecast_dates
-    consumption_types = getattr(model.dataset, 'variable_ids', None) or model.config.consumption_types
-
-    all_forecasts = []
-
-    for (customer_id, pod_id), pod_df in full_df.groupby(["CustomerID", "PodID"]):
-        for ctype in consumption_types:
-            if ctype not in pod_df.columns or pod_df[ctype].dropna().empty:
-                continue
-
-            model_for_type = global_models.get(ctype)
-            if model_for_type is None:
-                continue
-
-            preds = recursive_rf_forecast_for_pod(
-                model=model_for_type,
-                last_known_df=pod_df,
-                forecast_dates=forecast_dates,
-                target_col=ctype,
-                feature_columns=feature_columns
-            )
-
-            all_forecasts.extend([
-                {
-                    "CustomerID": customer_id,
-                    "PodID": pod_id,
-                    "ConsumptionType": ctype,
-                    "ReportingMonth": date,
-                    "Forecast": value
-                }
-                for date, value in preds.items()
-            ])
-
-    return pd.DataFrame(all_forecasts)
-def train_random_forest_globally_forecast_locally_with_aggregation(model: ForecastModel) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """
-    Orchestrates global RF training and local forecasting, returns performance and forecast outputs.
-    """
-    dict_  = prepare_global_training_data(model)
-    global_models = train_global_rf_models(dict_ ,model)
-    forecast_df = forecast_recursively_with_global_models(dict_,global_models,model)
-
-    # rf_performanc/e_df, forecast_combined_df = forecast_locally_with_global_models(df, feature_columns, global_models, model)
-    return pd.DataFrame({}), pd.DataFrame({})
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 
 
 def prepare_global_training_data(model) -> Dict[str, pd.DataFrame]:
+   """
+   Prepares the dataset for global model training.
+   Returns full df, feature df, and feature column list.
+   """
+   consumption_types = getattr(model.dataset, 'variable_ids', None) or model.config.consumption_types
+   df = model.dataset.processed_df.copy()
+
+   # Encode categorical IDs
+   df['CustomerID_encoded'] = LabelEncoder().fit_transform(df['CustomerID'].astype(str))
+   df['PodID_encoded'] = LabelEncoder().fit_transform(df['PodID'].astype(str))
+
+   # Temporal features
+   df = create_month_and_year_columns_(df)
+
+   # Lag features
+   df = create_lag_features(df, model.config.selected_columns, lags=3)
+   df, lag_features = prepare_lag_features(df, lag_columns=consumption_types)
+
+   # Select feature columns (no metadata)
+   feature_columns = lag_features + ['Month_sin', 'Month_cos', 'TimeIndex', 'CustomerID_encoded', 'PodID_encoded']
+   feature_df = df[feature_columns]
+   feature_df = feature_df.loc[:, (feature_df != 0).any(axis=0)]
+   feature_columns = feature_df.columns.tolist()
+
+   return {
+       "full_df": df,
+       "feature_df": feature_df,
+       "feature_columns": feature_columns
+   }
+
+
+def train_global_rf_models(
+   data: Dict[str, pd.DataFrame],
+   model
+) -> Dict[str, RandomForestRegressor]:
+   """
+   Trains or loads one RandomForestRegressor per consumption type.
+   Saves each trained model under:
+     model_configuration/{forecast_method_name}/global/{consumption_type}.pkl
+   Returns:
+     { consumption_type : RandomForestRegressor }
+   """
+   ufm_config = model.dataset.ufm_config
+   consumption_types = getattr(model.dataset, "variable_ids", None) or model.config.consumption_types
+
+   full_df = data["full_df"]
+   feature_df = data["feature_df"]
+
+   base_dir = os.path.join("model_configuration", ufm_config.forecast_method_name, "global")
+   os.makedirs(base_dir, exist_ok=True)
+
+   trained_models: Dict[str, RandomForestRegressor] = {}
+
+   rf_params_tuple = get_model_hyperparameters("randomforest", ufm_config.model_parameters)
+   # Expecting something like: (50, 10, 2, 1, 3, True)
+   (n_estimators,
+    max_depth,
+    min_samples_split,
+    min_samples_leaf,
+    max_features,
+    bootstrap_flag) = rf_params_tuple
+
+   for ctype in consumption_types:
+       model_path = os.path.join(base_dir, f"{ctype}.pkl")
+
+       if os.path.exists(model_path):
+           logger.info(f"📦 Loading existing RF model for '{ctype}' from {model_path}")
+           trained_models[ctype] = joblib.load(model_path)
+           continue
+
+       mask = full_df[ctype].notna()
+       y = full_df.loc[mask, ctype]
+       X = data["feature_df"].loc[mask]
+
+       if X.empty or y.empty:
+           logger.warning(f"⚠️ Skipping '{ctype}'—no data available.")
+           continue
+
+       if y.nunique() <= 1 or len(y) < 3:
+           logger.warning(f"⚠️ Skipping '{ctype}'—series invalid or too short.")
+           continue
+
+       logger.info(f"🚀 Training RF model for '{ctype}' (n_samples={len(y)})")
+       # rf = RandomForestRegressor(n_estimators=50, random_state=42, n_jobs=-1)
+       rf = RandomForestRegressor(
+           n_estimators=n_estimators,
+           max_depth=max_depth if max_depth > 0 else None,
+           min_samples_split=min_samples_split,
+           min_samples_leaf=min_samples_leaf,
+           max_features=max_features,
+           bootstrap=bootstrap_flag,
+           random_state=42,
+           n_jobs=-1
+       )
+       rf.fit(X, y)
+
+       joblib.dump(rf, model_path)
+       logger.info(f"💾 Saved RF model for '{ctype}' to {model_path}")
+       trained_models[ctype] = rf
+
+   return trained_models
+
+
+def recursive_rf_forecast_for_pod(
+   model: RandomForestRegressor,
+   last_known_df: pd.DataFrame,
+   forecast_dates: List[pd.Timestamp],
+   target_col: str,
+   feature_columns: List[str],
+   lags: int = 3
+) -> pd.Series:
+   """
+   Performs multi-step recursive forecasting for a single pod (last_known_df sorted by ReportingMonth).
+   Returns a pd.Series indexed by forecast_dates containing predicted values.
+   """
+   df = last_known_df.sort_values("ReportingMonth").reset_index(drop=True)
+   actual_vals = df[target_col].dropna().tolist()
+   if len(actual_vals) >= lags:
+       lag_queue = actual_vals[-lags:].copy()
+   else:
+       lag_queue = [0.0] * (lags - len(actual_vals)) + actual_vals.copy()
+
+   template = df.iloc[-1].copy()
+   preds: List[float] = []
+
+   for date in forecast_dates:
+       new_row = template.copy()
+       new_row["ReportingMonth"] = date
+       new_row["Month"] = date.month
+       new_row["Year"] = date.year
+       new_row["Month_sin"] = np.sin(2 * np.pi * date.month / 12)
+       new_row["Month_cos"] = np.cos(2 * np.pi * date.month / 12)
+       new_row["TimeIndex"] = ((date.year - df["ReportingMonth"].min().year) * 12 + date.month)
+
+       for i in range(1, lags + 1):
+           lag_col = f"{target_col}_lag{i}"
+           new_row[lag_col] = lag_queue[-i] if len(lag_queue) >= i else 0.0
+
+       row_df = pd.DataFrame([new_row[feature_columns]]).fillna(0)
+       pred = model.predict(row_df)[0]
+       preds.append(pred)
+       lag_queue.append(pred)
+
+   return pd.Series(data=preds, index=forecast_dates)
+
+
+def make_continuous_index(pod_df: pd.DataFrame) -> pd.DatetimeIndex:
+   """
+   Given a pod's DataFrame with ReportingMonth column, return a continuous monthly index
+   from min to max ReportingMonth.
+   """
+   start = pod_df["ReportingMonth"].min()
+   end = pod_df["ReportingMonth"].max()
+   return pd.date_range(start=start, end=end, freq="MS")
+
+
+def build_forecast_rows(
+    full_df: pd.DataFrame,
+    global_models: Dict[str, RandomForestRegressor],
+    feature_columns: List[str],
+    forecast_dates: List[pd.Timestamp],
+    consumption_types: List[str],
+    user_forecast_id: Any,
+    gap: str = "skip"
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
-    Prepares the dataset for global model training.
-    Returns full df, feature df, and feature column list.
+    Iterates over each (CustomerID, PodID) group in full_df, applies gap logic,
+    and returns two lists of dicts:
+      1) forecast_rows: each entry has
+         { "CustomerID","PodID","UserForecastMethodID","ReportingMonth","ConsumptionType","Forecast" }
+      2) perf_rows: each entry is exactly `_collect_metrics(...)` for that PodID×ctype.
     """
-    consumption_types = getattr(model.dataset, 'variable_ids', None) or model.config.consumption_types
-    df = model.dataset.processed_df.copy()
+    forecast_rows: List[Dict[str, Any]] = []
+    perf_rows: List[Dict[str, Any]] = []
 
-    # Encode categorical IDs
-    df['CustomerID_encoded'] = LabelEncoder().fit_transform(df['CustomerID'].astype(str))
-    df['PodID_encoded'] = LabelEncoder().fit_transform(df['PodID'].astype(str))
+    grouped = full_df.groupby(["CustomerID", "PodID"], sort=False)
+    for (cust_id, pod_id), pod_df in grouped:
+        pod_df = pod_df.sort_values("ReportingMonth").reset_index(drop=True)
+        continuous_index = make_continuous_index(pod_df)
+        actual_index = pod_df["ReportingMonth"]
 
-    # Temporal features
-    df = create_month_and_year_columns_(df)
+        if gap == "skip":
+            if not actual_index.isin(continuous_index).all() or len(actual_index) != len(continuous_index):
+                logger.warning(f"⚠️ Skipping Pod={pod_id} (Customer={cust_id}) due to gaps.")
+                continue
 
-    # Lag features
-    df = create_lag_features(df, model.config.selected_columns, lags=3)
-    df, lag_features = prepare_lag_features(df, lag_columns=consumption_types)
+        elif gap == "fill":
+            pod_df = pod_df.set_index("ReportingMonth").reindex(continuous_index)
+            pod_df.index.name = "ReportingMonth"
+            pod_df = pod_df.ffill().reset_index()
 
-    # Select feature columns (no metadata)
-    feature_columns = lag_features + ['Month_sin', 'Month_cos', 'TimeIndex', 'CustomerID_encoded', 'PodID_encoded']
-    feature_df = df[feature_columns]
-    feature_df = feature_df.loc[:, (feature_df != 0).any(axis=0)]
-    feature_columns = feature_df.columns.tolist()
+        else:
+            raise ValueError("gap must be one of ['fill','skip'].")
 
-    return {
-        "full_df": df,
-        "feature_df": feature_df,
-        "feature_columns": feature_columns
-    }
+        # For each consumption type, compute in-sample metrics + future forecast
+        for ctype in consumption_types:
+            rf_model = global_models.get(ctype)
+            if rf_model is None or pod_df[ctype].dropna().empty:
+                # If no model or no actual values, append zero‐forecast and zero‐metrics
+                zero_forecast = pd.Series([0.0] * len(forecast_dates), index=forecast_dates)
+                perf_rows.append(
+                    _collect_metrics(pod_id, cust_id, ctype, zero_forecast)
+                )
+                for date, _ in zero_forecast.items():
+                    forecast_rows.append({
+                        "CustomerID": cust_id,
+                        "PodID": pod_id,
+                        "UserForecastMethodID": user_forecast_id,
+                        "ReportingMonth": date,
+                        "ConsumptionType": ctype,
+                        "Forecast": 0.0
+                    })
+                continue
 
-def build_future_feature_matrix(full_df, forecast_dates, feature_columns):
-    """
-    Creates a forecast feature matrix for all customer–pod combinations and forecast_dates.
-    """
-    records = []
-    for (customer_id, pod_id), group in full_df.groupby(['CustomerID', 'PodID']):
-        row = group.iloc[-1]  # last known row for this pod
-        for date in forecast_dates:
-            feature_row = row.copy()
-            feature_row['ReportingMonth'] = date
-            feature_row['Month'] = date.month
-            feature_row['Year'] = date.year
-            feature_row['Month_sin'] = np.sin(2 * np.pi * date.month / 12)
-            feature_row['Month_cos'] = np.cos(2 * np.pi * date.month / 12)
-            feature_row['TimeIndex'] = (date.year - full_df['ReportingMonth'].min().year) * 12 + date.month
-            records.append(feature_row)
+            # --- 1) In‐sample prediction & metrics (last window of actuals) ---
+            series = pod_df.set_index("ReportingMonth")[ctype]
+            # Use last min(steps, len(series)) points
+            evaluation_window = min(len(series), len(forecast_dates))
+            test_actual = series[-evaluation_window:]
 
-    future_df = pd.DataFrame(records)
-    future_df = future_df[feature_columns].fillna(0)
-    return future_df
+            # In‐sample “rolling” prediction: predict same indices
+            # We can do: X_in = feature_columns of the final window
+            # But simplest: train‐on‐all, then forecast back only the last segment
+            # However, to mirror autoarima exactly, we do:
+            #    in_sample_preds = rf_model.predict(X corresponding to test_actual.index)
+            df_idx = pod_df.set_index("ReportingMonth")
+            X_in = df_idx.loc[test_actual.index, feature_columns]
+            test_pred = rf_model.predict(X_in)
 
+            # Compute metrics exactly like ARIMA did
+            metrics, baseline_metrics = evaluate_predictions(test_actual.values, test_pred)
 
-def train_global_rf_models(data: Dict[str, pd.DataFrame], model) -> Dict[str, any]:
-    """
-    Trains global Random Forest models for each consumption type.
-    """
-    ufm_config = model.dataset.ufm_config
-    mode = model.config.mode
-    consumption_types = getattr(model.dataset, 'variable_ids', None) or model.config.consumption_types
+            # --- 2) Multi‐step future forecast ---
+            future_forecast = recursive_rf_forecast_for_pod(
+                model=rf_model,
+                last_known_df=pod_df,
+                forecast_dates=forecast_dates,
+                target_col=ctype,
+                feature_columns=feature_columns,
+                lags=3
+            )
 
-    full_df = data["full_df"]
-    feature_df = data["feature_df"]
+            # --- 3) Collect metrics via _collect_metrics (it returns a dict row) ---
+            perf_dict = _collect_metrics(
+                pod_id,
+                cust_id,
+                ctype,
+                future_forecast,
+                metrics,
+                baseline_metrics
+            )
+            perf_rows.append(perf_dict)
 
-    trained_models = {}
-    for consumption_type in consumption_types:
-        valid_idx = full_df[consumption_type].notna()
-        y = full_df.loc[valid_idx, consumption_type]
-        X = feature_df.loc[valid_idx]
-
-        if X.empty or y.empty:
-            logger.warning(f"Skipping {consumption_type} due to insufficient data.")
-            continue
-
-        # ✅ Add Global Series Validation Here
-        valid, reason = is_series_valid(y)
-        if not valid:
-            logger.warning(f"⚠️ Skipping global model training for {consumption_type}: {reason}.")
-            continue
-
-        param_grid = get_model_hyperparameters("randomforest", ufm_config.model_parameters)
-        param_grid = regressor_grid_for_pipeline(param_grid)
-        model_dir = os.path.join("model_configuration", ufm_config.forecast_method_name, "global")
-        os.makedirs(model_dir, exist_ok=True)
-
-        pipeline = build_rf_pipeline()
-        if mode == 'validation':
-            cv = KFold(n_splits=3, shuffle=True, random_state=42)
-            search = GridSearchCV(pipeline, param_grid, cv=cv, scoring='neg_mean_absolute_error', n_jobs=-1)
-            search.fit(X, y)
-            save_best_params_rf(search.best_params_, model_dir, consumption_type)
-        elif mode in ['train', 'test']:
-            best_params = load_best_params_rf(model_dir, consumption_type)
-            if best_params is None:
-                best_params = {k: v[0] for k, v in param_grid.items()}
-            pipeline.set_params(**best_params)
-            pipeline.fit(X, y)
-            trained_models[consumption_type] = pipeline
-    return trained_models
-
-
-
-
-def forecast_globally_by_consumption_type(full_df: pd.DataFrame, future_df: pd.DataFrame, forecast_dates: List[pd.Timestamp], global_models: Dict[str, any], feature_columns: List[str]) -> pd.DataFrame:
-    all_predictions = []
-    unique_pairs = full_df[['CustomerID', 'PodID']].drop_duplicates().reset_index(drop=True)
-    for ctype, model in global_models.items():
-        preds = model.predict(future_df)
-        preds_df = pd.DataFrame({
-            "CustomerID": np.repeat(unique_pairs['CustomerID'].values, len(forecast_dates)),
-            "PodID": np.repeat(unique_pairs['PodID'].values, len(forecast_dates)),
-            "ReportingMonth": forecast_dates * len(unique_pairs),
-            "Forecast": preds,
-            "ConsumptionType": ctype
-        })
-        all_predictions.append(preds_df)
-    return pd.concat(all_predictions, ignore_index=True)
-
-def forecast_locally_with_global_models(data: Dict[str, pd.DataFrame], global_models: Dict[str, any], model) -> pd.DataFrame:
-    """
-    Performs local forecasts per customer/pod using globally trained models. Aggregates results.
-    """
-
-    ufm_config = model.dataset.ufm_config
-    forecast_dates = model.dataset.forecast_dates
-    consumption_types = getattr(model.dataset, 'variable_ids', None) or model.config.consumption_types
-
-    consumer_perf_data = CustomerPerformanceData(customer_id="GLOBAL", columns=consumption_types)
-    model_perf_rows = []
-    all_forecasts = []
-
-    unique_customers = df['CustomerID'].unique()
-    for customer_id in unique_customers:
-        customer_df = df[df['CustomerID'] == customer_id]
-        for pod_id in customer_df['PodID'].unique():
-            pod_df = customer_df[customer_df['PodID'] == pod_id]
-            pod_perf_rows = []
-
-            for consumption_type in consumption_types:
-                X_pod, y_pod = prepare_features_and_target(pod_df, feature_columns, consumption_type)
-                if X_pod.empty or y_pod.empty:
-                    continue
-
-                # ✅ Add Series Validation Here
-                valid, reason = is_series_valid(y_pod)
-                if not valid:
-                    logger.warning(f"⚠️ Skipping {consumption_type} for pod {pod_id}: {reason}.")
-                    forecast = pd.Series([0] * len(forecast_dates), index=forecast_dates)
-                    pod_perf_rows.append(_collect_metrics(
-                        pod_id, customer_id, consumption_type, forecast
-                    ))
-                    continue
-
-                model_for_type = global_models.get(consumption_type)
-                y_pred = model_for_type.predict(X_pod)
-                metrics, baseline = evaluate_predictions(y_pod, y_pred)
-
-                # Future Forecast
-                try:
-                    future_X = pd.DataFrame(0, index=forecast_dates, columns=feature_columns)
-                    future_X[['CustomerID_encoded', 'PodID_encoded']] = [
-                        pod_df['CustomerID_encoded'].iloc[0],
-                        pod_df['PodID_encoded'].iloc[0]
-                    ]
-                    y_future = model_for_type.predict(future_X)
-                    future_forecast = pd.Series(y_future, index=forecast_dates)
-                except Exception as e:
-                    logger.error(f"⚠️ Forecast failed for {customer_id}-{pod_id}-{consumption_type}: {e}")
-                    future_forecast = pd.Series([], dtype=float)
-
-                # Collect performance row
-                pod_perf_rows.append({
-                    'pod_id': pod_id,
-                    'customer_id': customer_id,
-                    'consumption_type': consumption_type,
-                    'forecast': future_forecast,
-                    'RMSE': metrics['RMSE'],
-                    'MAE': metrics['MAE'],
-                    'R2': metrics['R2'],
-                    'RMSE_baseline': baseline['RMSE'],
-                    'MAE_baseline': baseline['MAE'],
-                    'R2_baseline': baseline['R2']
+            # --- 4) Append forecast rows for each date/value pair ---
+            for date, val in future_forecast.items():
+                forecast_rows.append({
+                    "CustomerID": cust_id,
+                    "PodID": pod_id,
+                    "UserForecastMethodID": user_forecast_id,
+                    "ReportingMonth": date,
+                    "ConsumptionType": ctype,
+                    "Forecast": val
                 })
 
-            if pod_perf_rows:
-                performance_df = pd.DataFrame(pod_perf_rows)
-                pod_perf_data = PodIDPerformanceData(
-                    pod_id=pod_id,
-                    forecast_method_name=ufm_config.forecast_method_name,
-                    customer_id=customer_id,
-                    user_forecast_method_id=ufm_config.user_forecast_method_id,
-                    performance_data_frame=performance_df
-                )
-                consumer_perf_data.pod_by_id_performance.append(pod_perf_data)
-                model_perf_rows.append(_convert_to_model_performance_row(pod_perf_data, customer_id, pod_id, ufm_config))
-                all_forecasts.append(_convert_forecast_map_to_df(pod_perf_data, customer_id, pod_id, ufm_config))
+    return forecast_rows, perf_rows
 
-    # Aggregate performance and forecast outputs
-    all_perf_df, final_perf_df, rf_performance_df, forecast_combined_df = _aggregate_forecast_outputs(
-        consumer_perf_data, model_perf_rows, all_forecasts
+
+def pivot_forecast_rows(
+    forecast_rows: List[Dict[str, Any]],
+    consumption_types: List[str]
+) -> pd.DataFrame:
+    """
+    Takes a list of dicts with keys:
+      "CustomerID","PodID","UserForecastMethodID","ReportingMonth","ConsumptionType","Forecast"
+    and pivots it so each row is:
+      [PodID, UserForecastMethodID, CustomerID, ReportingMonth, <ctype1>, <ctype2>, …]
+
+    Any missing consumption‐type values become 0.0.
+    """
+    if not forecast_rows:
+        columns = ["PodID", "UserForecastMethodID", "CustomerID", "ReportingMonth"] + consumption_types
+        return pd.DataFrame(columns=columns)
+
+    flat = pd.DataFrame(forecast_rows)
+    pivoted = flat.pivot_table(
+        index=["CustomerID", "PodID", "UserForecastMethodID", "ReportingMonth"],
+        columns="ConsumptionType",
+        values="Forecast",
+        aggfunc="first"
+    ).reset_index()
+
+    for ctype in consumption_types:
+        if ctype not in pivoted.columns:
+            pivoted[ctype] = np.nan
+
+    pivoted[consumption_types] = pivoted[consumption_types].fillna(0.0)
+
+    final_df = pivoted[
+        ["PodID", "UserForecastMethodID", "CustomerID", "ReportingMonth"] + consumption_types
+    ]
+    return final_df
+
+
+def build_perf_df(
+    perf_rows: List[Dict[str, Any]],
+    consumption_types: List[str],
+    model_name: str,
+    user_forecast_id: Any,
+    data_brick_id: Any
+) -> pd.DataFrame:
+    """
+    Builds a DataFrame matching Performance.csv schema, based on the list of
+    dicts returned by _collect_metrics for each (pod,ctype). We simply concat all rows
+    for each pod, then aggregate into one row per pod with the required columns:
+
+      [CustomerID, PodID, DataBrickID, UserForecastMethodID, ModelName,
+       RMSE_Avg, R2_Avg,
+       RMSE_<ctype1>, R2_<ctype1>, RMSE_<ctype2>, R2_<ctype2>, …
+      ]
+
+    Because `_collect_metrics(...)` already returns a dict containing:
+       {
+         'pod_id': …,
+         'customer_id': …,
+         'consumption_type': …,
+         'forecast': pd.Series,
+         'RMSE': …,
+         'MAE': …,
+         'R2': …,
+         'baseline_RMSE': …,
+         'baseline_MAE': …,
+         'baseline_R2': …
+       }
+
+    We need to pivot those metrics into one row per pod.
+    """
+    if not perf_rows:
+        # Build empty DataFrame with correct columns
+        cols = [
+            "CustomerID", "PodID", "DataBrickID", "UserForecastMethodID", "ModelName",
+            "RMSE_Avg", "R2_Avg"
+        ]
+        for ctype in consumption_types:
+            cols += [f"RMSE_{ctype}", f"R2_{ctype}"]
+        return pd.DataFrame(columns=cols)
+
+    df_perf = pd.DataFrame(perf_rows)
+
+    # For each (pod_id, consumption_type), compute metrics
+    # Then aggregate per pod: RMSE_<ctype>, R2_<ctype>, and compute RMSE_Avg, R2_Avg across all types
+    records: List[Dict[str, Any]] = []
+    grouped = df_perf.groupby(["pod_id", "customer_id"], sort=False)
+
+    for (pod_id, cust_id), sub in grouped:
+        record: Dict[str, Any] = {
+            "CustomerID": cust_id,
+            "PodID": pod_id,
+            "DataBrickID": data_brick_id,
+            "UserForecastMethodID": user_forecast_id,
+            "ModelName": model_name
+        }
+
+        # Pull out RMSE and R2 for each ctype
+        rmse_list = []
+        r2_list = []
+        for ctype in consumption_types:
+            row = sub[sub["consumption_type"] == ctype]
+            if row.empty:
+                # no metrics for this ctype → set to 0
+                record[f"RMSE_{ctype}"] = 0.0
+                record[f"R2_{ctype}"] = 0.0
+            else:
+                rmse_val = float(row["RMSE"].iloc[0])
+                r2_val = float(row["R2"].iloc[0])
+                record[f"RMSE_{ctype}"] = rmse_val
+                record[f"R2_{ctype}"] = r2_val
+                rmse_list.append(rmse_val)
+                r2_list.append(r2_val)
+
+        # Compute averages across all consumption types that appeared
+        record["RMSE_Avg"] = float(np.mean(rmse_list)) if rmse_list else 0.0
+        record["R2_Avg"] = float(np.mean(r2_list)) if r2_list else 0.0
+
+        records.append(record)
+
+    return pd.DataFrame(records)
+
+def run_rf_forecast_pipeline(
+    model,
+    gap: str = "fill"
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Orchestrates:
+      1) prepare_global_training_data
+      2) train_global_rf_models
+      3) build_forecast_rows → pivot to forecast_df + collect perf_rows
+      4) build_perf_df
+
+    Returns:
+      - perf_df matching Performance.csv
+      - forecast_df matching Forecast.csv
+    """
+    # 1) Global training data
+    data_dict = prepare_global_training_data(model)
+    full_df: pd.DataFrame = data_dict["full_df"]
+    feature_df: pd.DataFrame = data_dict["feature_df"]
+    feature_columns: List[str] = data_dict["feature_columns"]
+
+    # 2) Train/load global models
+    logger.info("🔧 Training/loading global RF models …")
+    global_models = train_global_rf_models(data_dict, model)
+
+    ufm_config = model.dataset.ufm_config
+    model_name = ufm_config.forecast_method_name
+    user_forecast_id = ufm_config.user_forecast_method_id
+    data_brick_id = ufm_config.databrick_task_id
+
+    # 3) Build forecast + perf rows
+    logger.info("🔮 Building forecast & performance rows …")
+    consumption_types = getattr(model.dataset, "variable_ids", None) or model.config.consumption_types
+    forecast_dates = model.dataset.forecast_dates
+
+    forecast_rows, perf_rows = build_forecast_rows(
+        full_df=full_df,
+        global_models=global_models,
+        feature_columns=feature_columns,
+        forecast_dates=forecast_dates,
+        consumption_types=consumption_types,
+        user_forecast_id=user_forecast_id,
+        gap=gap
     )
-    logger.info("✅ Forecasting and aggregation complete.")
-    return rf_performance_df, forecast_combined_df
+
+    # 4) Pivot into final forecast_df
+    forecast_df = pivot_forecast_rows(forecast_rows, consumption_types)
+
+    # 5) Build perf_df
+    perf_df = build_perf_df(
+        perf_rows=perf_rows,
+        consumption_types=consumption_types,
+        model_name=model_name,
+        user_forecast_id=user_forecast_id,
+        data_brick_id=data_brick_id
+    )
+
+    logger.info("✅ RF pipeline complete. Returning perf_df & forecast_df.")
+    return perf_df, forecast_df

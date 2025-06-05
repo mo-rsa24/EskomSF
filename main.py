@@ -29,7 +29,6 @@ def main():
 
     dataset = ForecastDataset(args.databrick_task_id, config.save)
     dataset.load_data()
-    dataset.parse_identifiers()
 
     preprocessed_info = dataset.preprocess()
 

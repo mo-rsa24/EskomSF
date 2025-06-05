@@ -96,11 +96,9 @@ class ForecastDataset:
 
     def load_data(self) -> None:
         """
-        Load and prepare the dataset using the designated dml function. Copies the result
-        into both raw_df and processed_df.
-
-        Raises:
-            ValueError: If the loaded DataFrame is empty.
+        Function: Perform dbo.PredictiveInputData() to fetch and filter data from the database
+        Returns: A dataframe that contains all the filtered data
+        Raises: ValueError: If the data loaded from the database is empty.
         """
         self.raw_df = load_and_prepare_data(self.ufm_config, save= self.save,spark = self.spark)
         if self.raw_df.empty:
