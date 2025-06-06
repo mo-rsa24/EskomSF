@@ -1,5 +1,3 @@
-from pmdarima import auto_arima
-from sklearn.model_selection import TimeSeriesSplit
 from statsmodels.tsa.arima.model import ARIMA
 import warnings
 
@@ -7,7 +5,6 @@ from statsmodels.tools.sm_exceptions import ConvergenceWarning
 from statsmodels.tsa.statespace.sarimax import SARIMAX
 
 from data.dml import *
-import joblib
 import pandas as pd
 from typing import Tuple, NamedTuple
 
@@ -18,6 +15,7 @@ from models.algorithms.helper import _convert_to_model_performance_row, \
     _convert_forecast_map_to_df, _get_customer_data, _collect_metrics, _apply_log
 from models.algorithms.utilities import prepare_time_series_data, evaluate_predictions
 from models.base import ForecastModel
+from models.forecast_validation import run_forecast_sanity_checks
 
 # Setup logger with basic configuration
 logging.basicConfig(level=logging.INFO)
@@ -157,6 +155,7 @@ def forecast_arima_for_single_customer(model: ForecastModel):
         # Combine across all customers
         arima_performance = pd.concat(arima_model_performances_dataframes).reset_index().drop(columns=['index'])
         forecast_combined_df = pd.concat(all_forecasts, ignore_index=True)
+        run_forecast_sanity_checks(forecast_combined_df,arima_performance,consumption_types,model)
         return arima_performance, forecast_combined_df
     except Exception as e:
         meta = get_error_metadata("ModelFitFailure", {"exception": str(e)})

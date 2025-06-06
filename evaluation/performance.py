@@ -26,6 +26,49 @@ class PerformanceData:
             self.metrics[key] = value
 import math
 
+class RandomForestPerfRow:
+    """
+    Represents one row of performance metrics for a series.
+    Provides a to_row() method returning a dict for DataFrame ingestion.
+    """
+    def __init__(
+        self,
+        cust_id: Any,
+        pod_id: Any,
+        mse: float,
+        mae: float,
+        r2: float,
+        n_train: int,
+        n_test: int,
+        error: Optional[str] = None
+    ):
+        self.cust_id = cust_id
+        self.pod_id = pod_id
+        self.mse = mse
+        self.mae = mae
+        self.r2 = r2
+        self.n_train = n_train
+        self.n_test = n_test
+        self.error = error
+
+    def to_row(self) -> Dict[str, Any]:
+        if self.error:
+            return {
+                "CustomerID": self.cust_id,
+                "PodID": self.pod_id,
+                "error": self.error
+            }
+        return {
+            "CustomerID": self.cust_id,
+            "PodID": self.pod_id,
+            "MSE": self.mse,
+            "MAE": self.mae,
+            "R2": self.r2,
+            "n_train": self.n_train,
+            "n_test": self.n_test
+        }
+
+
 @dataclass
 class ModelPodPerformance:
     ModelName: str

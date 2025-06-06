@@ -35,16 +35,6 @@ def _convert_forecast_map_to_df(pod_perf, customer_id, pod_id, config):
         forecast_map, customer_id, pod_id, list(forecast_map.keys()), config.user_forecast_method_id
     )
 
-def _convert_forecast_map_to_spark_df(pod_perf, config):
-    df_long = pod_perf.performance_data_frame
-    return finalize_model_performance_df(
-            df_long,
-            model_name=config.forecast_method_name,
-            databrick_id=getattr(config, 'databrick_task_id', None),
-            user_forecast_method_id=config.user_forecast_method_id
-    )
-
-
 def _apply_log(series: pd.Series, log: bool) -> pd.Series:
     """
     Optionally apply a log transformation to the series.

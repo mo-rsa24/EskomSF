@@ -5,7 +5,7 @@ visualize: false
 
 # Feature toggle for SARIMAX with exogenous variables
 use_feature_engineering: false
-lag_hours: [168, 336, 504, 672]
+lag: [1, 2, 3, 6, 12, 24, 36]
 train_mode: recursive
 fail_on_invalid_lags: false
 use_extended_calendar_features: true

@@ -14,7 +14,7 @@ class HyperParameterConfig:
     fail_on_invalid_lags: bool
     use_extended_calendar_features: bool
     add_calendar_features: bool
-    lag_hours: List[int]
+    lag: List[int]
     visualize: bool
     tables: dict
     write_url: str
@@ -31,7 +31,7 @@ def load_config(path: str = 'config.yaml') -> HyperParameterConfig:
     # Filter out keys used for the forecasting pipeline (ignore environment definitions)
     config_keys = ["selected_columns", "consumption_types", "mode", "debug", "log",
                    "use_feature_engineering","train_mode", "fail_on_invalid_lags",
-                   "use_extended_calendar_features", "add_calendar_features", "lag_hours",
+                   "use_extended_calendar_features", "add_calendar_features", "lag",
                    "visualize", "tables", "write_url", "save",  "user", "password"]
     filtered_data = { key: data[key] for key in config_keys if key in data }
     return HyperParameterConfig(**filtered_data)

@@ -4,6 +4,18 @@ ModelConfigMissing:
   severity: high
   component: model_training
 
+AllZeroForecast:
+  message: "All forecasts for UserForecastMethodID: {ufmid} | Databrick ID: {databrick_id} contains only zeros for every consumption type"
+  code: E7002
+  severity: high
+  component: forecasting
+
+AllZeroMetrics:
+  message: "All performance metrics (e.g MSE, RMSE, etc) for UserForecastMethodID: {ufmid} | Databrick ID: {databrick_id} contains only zeros for every consumption type"
+  code: E7002
+  severity: high
+  component: forecasting
+
 DBConnectionError:
   message: "Failed to connect to {engine} database: {exception}"
   code: 103
