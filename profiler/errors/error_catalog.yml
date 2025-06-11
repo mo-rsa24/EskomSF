@@ -59,6 +59,12 @@ ModelFitFailure:
   severity: critical
   component: model_training
 
+ForecastFailure:
+  code: E6109
+  message: "Forecast failed: {exception}"
+  severity: critical
+  component: model_training
+
 MissingCSV:
   code: E4001
   message: "CSV file not found for method: {forecast_method_name}"

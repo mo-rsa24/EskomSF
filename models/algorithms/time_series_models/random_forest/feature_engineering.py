@@ -3,7 +3,7 @@ from typing import List, Tuple
 import numpy as np
 import pandas as pd
 
-from models.algorithms.tree_algorithms.random_forest.utils import compute_time_index
+from models.algorithms.time_series_models.random_forest.utils import compute_time_index
 
 
 class FeatureEngineer:

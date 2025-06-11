@@ -1,4 +1,4 @@
-# random_forest.py
+# new_random_forest.py
 
 import logging
 from typing import List, Tuple, Any
@@ -11,11 +11,11 @@ from evaluation.performance import RandomForestPerfRow, PodIDPerformanceData
 from hyperparameters import get_model_hyperparameters
 from models.algorithms.helper import _collect_metrics
 from models.algorithms.tree_algorithms.helper import naive_last_value_forecast
-from models.algorithms.tree_algorithms.random_forest.config import RFConfig
-from models.algorithms.tree_algorithms.random_forest.feature_engineering import FeatureEngineer
-from models.algorithms.tree_algorithms.random_forest.manager import RFModelManager
-from models.algorithms.tree_algorithms.random_forest.rf_factory import EncoderFactory
-from models.algorithms.tree_algorithms.random_forest.utils import evaluate_regression, train_test_split_time
+from models.algorithms.time_series_models.random_forest.config import RFConfig
+from models.algorithms.time_series_models.random_forest.feature_engineering import FeatureEngineer
+from models.algorithms.time_series_models.random_forest.manager import RFModelManager
+from models.algorithms.time_series_models.random_forest.rf_factory import EncoderFactory
+from models.algorithms.time_series_models.random_forest.utils import evaluate_regression, train_test_split_time
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)

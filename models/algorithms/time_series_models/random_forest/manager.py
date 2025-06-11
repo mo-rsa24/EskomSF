@@ -7,10 +7,10 @@ import pandas as pd
 from sklearn.ensemble import RandomForestRegressor
 
 from evaluation.performance import RandomForestPerfRow
-from models.algorithms.tree_algorithms.random_forest.config import RFConfig
-from models.algorithms.tree_algorithms.random_forest.feature_engineering import FeatureEngineer
-from models.algorithms.tree_algorithms.random_forest.rf_factory import EncoderFactory
-from models.algorithms.tree_algorithms.random_forest.utils import evaluate_regression, train_test_split_time
+from models.algorithms.time_series_models.random_forest.config import RFConfig
+from models.algorithms.time_series_models.random_forest.feature_engineering import FeatureEngineer
+from models.algorithms.time_series_models.random_forest.rf_factory import EncoderFactory
+from models.algorithms.time_series_models.random_forest.utils import evaluate_regression, train_test_split_time
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)

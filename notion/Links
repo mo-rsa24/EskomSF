@@ -1,3 +1,27 @@
 YAML-Based Validation System for Profiling Categories
 - https://www.notion.so/YAML-Based-Validation-System-for-Profiling-Categories-1ed650487ec480a0b9e8d6046a249e36
 
+
+
+xgb_params_tuple = get_model_hyperparameters("xgboost", ufm_config.model_parameters)
+    # Unpack:
+    #   (n_estimators, max_depth, learning_rate, subsample, colsample_bytree, booster_flag)
+    (n_estimators,
+     max_depth,
+     learning_rate,
+     subsample,
+     colsample_bytree) = xgb_params_tuple
+
+
+
+xgb = XGBRegressor(
+            n_estimators=int(n_estimators),
+            max_depth=int(max_depth) if int(max_depth) > 0 else None,
+            learning_rate=float(learning_rate),
+            subsample=float(subsample),
+            colsample_bytree=float(colsample_bytree),
+            random_state=42,
+            n_jobs=-1,
+            objective="reg:squarederror"
+        )
+        xgb.fit(X, y)

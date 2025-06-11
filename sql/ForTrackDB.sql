@@ -56,8 +56,7 @@ SELECT * FROM dbo.DataBrickTasks where DatabrickID = 11;
 SELECT * FROM dbo.ForecastFact
 WHERE UserForecastMethodID = 11;
 
-
-
+UPDATE UserForecastMethod SET Parameters = '(100, 30, 2, 1, 0.5, true)' WHERE UserForecastMethodID = 286;
 
 -- ===============================
 -- 📊 3B. FETCH MODEL EVALUATION METRICS

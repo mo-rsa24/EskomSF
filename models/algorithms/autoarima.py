@@ -12,7 +12,7 @@ from db.error_logger import insert_profiling_error
 from evaluation.performance import *
 from hyperparameters import get_model_hyperparameters
 from models.algorithms.helper import _convert_to_model_performance_row, \
-    _convert_forecast_map_to_df, _get_customer_data, _collect_metrics, _apply_log
+    _convert_forecast_map_to_df, _get_customer_data, _collect_metrics, _apply_log, ensure_numeric_consumption_types
 from models.algorithms.utilities import prepare_time_series_data, evaluate_predictions
 from models.base import ForecastModel
 from models.forecast_validation import run_forecast_sanity_checks
@@ -36,14 +36,14 @@ def fit_time_series_model(series, order, seasonal_order, log=False, exog=None):
     return train_arima_model(series, order, log, exog)
 
 def train_arima_model(series: pd.Series, order: Tuple[int, int, int], log: bool = False, endog: Optional[pd.DataFrame] = None, exog: Optional[pd.DataFrame] = None):
-    logger.info("🔧 Training ARIMA with exog")
+    logger.info("🔧 Training ARIMA")
     series = _apply_log(series, log)
     model = ARIMA(series, order=order, exog=exog)
     return model.fit(method_kwargs={"maxiter": 500})
 
 
 def train_sarima_model(series: pd.Series, order: Tuple[int, int, int], seasonal_order: Tuple[int, int, int, int], log: bool = False, endog: Optional[pd.DataFrame] = None, exog: Optional[pd.DataFrame] = None):
-    logger.info(f"🔧 Training seasonal SARIMA with exog: {exog.columns.tolist() if exog is not None else 'None'}")
+    logger.info(f"🔧 Training seasonal SARIMA")
     series = _apply_log(series, log)
     model = SARIMAX(endog=series,exog=exog, order=order, seasonal_order=seasonal_order)
     return model.fit(method_kwargs={"maxiter": 200})
@@ -112,6 +112,7 @@ def forecast_arima_for_single_customer(model: ForecastModel):
             safe_exit(meta["code"], meta["message"])
 
         df = model.dataset.processed_df
+        df = ensure_numeric_consumption_types(df, model)
         unique_customers, unique_pod_ids = model.dataset.extract_unique_customers_and_pods()
         ufm_config = model.dataset.ufm_config
         consumption_types = getattr(model.dataset, 'variable_ids', None) or model.config.consumption_types
@@ -168,6 +169,18 @@ def forecast_arima_for_single_customer(model: ForecastModel):
             component=meta["component"]
         )
         raise
+
+
+def plot_prediction(series, future_forecast, consumption_type):
+    plt.figure()
+    plt.plot(series.index, series, label='Historical')
+    plt.plot(future_forecast.index, future_forecast, label='Forecast')
+    plt.title(f'{consumption_type} Forecast')
+    plt.xlabel('Reporting Month')
+    plt.ylabel(f'{consumption_type}')
+    plt.legend()
+    plt.show()
+
 
 def forecast_for_podel_id(
     df: pd.DataFrame,
@@ -254,40 +267,45 @@ def forecast_for_podel_id(
                     f"⚠️ Filling gap of {gap_months} months from {last_date.date()} to {forecast_start.date()}"
                 )
         # Fit model
-        model = fit_time_series_model(series, order, seasonal_order, log=forecast_model.config.log)
-        future_forecast = model.get_forecast(steps=total_steps).predicted_mean
-        std = future_forecast.std() / future_forecast.mean()
-        if std < 1e-2:
-            logger.warning(
-                f"⚠️ Forecast for Pod {pod_id}, {consumption_type} is flat. Model may be underfit or data insufficient. Please try different parameters (e.g (2,1,2)) or a different model")
-            meta = get_error_metadata("FlatForecast", {"gap_months": gap_months, "last_date":last_date.date(),"forecast_start":forecast_start.date(), "pod_id": pod_id,"consumption_type": consumption_type})
-            insert_profiling_error(
-                log_id=None,
-                error=meta["message"],
-                traceback="",  # or traceback.format_exc()
-                error_type="ForecastGapTooLarge",
-                severity=meta["severity"],
-                component=meta["component"]
-            )
-        if forecast_model.config.log:
-            future_forecast = np.exp(future_forecast)
-
-        # Evaluate on last portion of real data
-        evaluation_window = min(steps, len(series))
-        test_actual = series[-evaluation_window:]
-        test_pred = model.predict(start=test_actual.index[0], end=test_actual.index[-1])
-        if forecast_model.config.log:
-            test_pred = np.exp(test_pred)
-
-        metrics, baseline_metrics = evaluate_predictions(test_actual, test_pred)
-        if gap_handling == "fill":
-            future_forecast = future_forecast[future_forecast.index.isin(forecast_horizon)].copy()
-            future_forecast = future_forecast.reindex(forecast_horizon).dropna()
-        data.append(_collect_metrics(
-            pod_id, customer_id, consumption_type,
-            future_forecast, metrics, baseline_metrics
-        ))
-
+        try:
+            model = fit_time_series_model(series, order, seasonal_order, log=forecast_model.config.log)
+            future_forecast = model.get_forecast(steps=total_steps).predicted_mean
+            std = future_forecast.std() / future_forecast.mean()
+            if std < 1e-2:
+                logger.warning(
+                    f"⚠️ Forecast for Pod {pod_id}, {consumption_type} is flat. Model may be underfit or data insufficient. Please try different parameters (e.g (2,1,2)) or a different model")
+                meta = get_error_metadata("FlatForecast", {"gap_months": gap_months, "last_date":last_date.date(),"forecast_start":forecast_start.date(), "pod_id": pod_id,"consumption_type": consumption_type})
+                insert_profiling_error(
+                    log_id=None,
+                    error=meta["message"],
+                    traceback="",  # or traceback.format_exc()
+                    error_type="ForecastGapTooLarge",
+                    severity=meta["severity"],
+                    component=meta["component"]
+                )
+            if forecast_model.config.log:
+                future_forecast = np.exp(future_forecast)
+            # plot_prediction(series, future_forecast, consumption_type)
+            # Evaluate on last portion of real data
+            evaluation_window = min(steps, len(series))
+            test_actual = series[-evaluation_window:]
+            test_pred = model.predict(start=test_actual.index[0], end=test_actual.index[-1])
+            if forecast_model.config.log:
+                test_pred = np.exp(test_pred)
+            metrics, baseline_metrics = evaluate_predictions(test_actual, test_pred)
+            if gap_handling == "fill":
+                future_forecast = future_forecast[future_forecast.index.isin(forecast_horizon)].copy()
+                future_forecast = future_forecast.reindex(forecast_horizon).dropna()
+            data.append(_collect_metrics(
+                pod_id, customer_id, consumption_type,
+                future_forecast, metrics, baseline_metrics
+            ))
+        except Exception as e:
+            meta = get_error_metadata("ModelFitFailure", {"exception": str(e)})
+            insert_profiling_error(log_id=None, error=meta["message"], traceback="",  error_type="ModelFitFailure",severity=meta["severity"], component=meta["component"])
+            forecast = pd.Series([0] * steps, index=forecast_horizon)
+            data.append(_collect_metrics(pod_id, customer_id, consumption_type, forecast))
+            continue
     return PodIDPerformanceData(
         pod_id=pod_id,
         forecast_method_name=ufm_config.forecast_method_name,

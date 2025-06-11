@@ -1,4 +1,3 @@
-# main.py
 import argparse
 import logging
 
@@ -13,6 +12,7 @@ from data.dml import get_single_time_series_for_single_customer
 
 from visualization.exploration.behaviour import plot_raw_series, facet_consumption_profiles, plot_overlay_years, \
     plot_top_consumers, plot_missingness_heatmap
+
 
 
 def main():
@@ -65,8 +65,9 @@ def main():
 
     pipeline = ForecastPipeline(dataset=dataset,config=config)
     model_performance, forecast_combined_df = pipeline.run()
-    forecast_combined_df.to_csv("output.csv")
-    logging.info("Forecasting result: %s", model_performance)
+    print('Done.')
+    # forecast_combined_df.to_csv("output.csv")
+    # logging.info("Forecasting result: %s", model_performance)
 
 
 if __name__ == '__main__':

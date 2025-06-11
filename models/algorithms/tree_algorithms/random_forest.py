@@ -1,5 +1,10 @@
-# XGBoost.py
+# random_forest.py
 
+"""
+Enhanced Random Forest global→local pipeline with dynamic lag/rolling, encoding,
+model persistence, and consistent evaluation. Fixed key‐lookup for ID encoding
+in future forecast by using precomputed encoding maps.
+"""
 
 import logging
 import os
@@ -8,10 +13,9 @@ from typing import List, Tuple, Dict
 import pandas as pd
 import numpy as np
 import joblib
+from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-from xgboost import XGBRegressor
 
-from config_loader import HyperParameterConfig
 from db.queries import ForecastConfig, insert_profiling_error
 from docstring.utilities import profiled_function
 from evaluation.performance import ModelPodPerformance
@@ -55,16 +59,11 @@ def evaluate_regression(
         "R2": float(r2_score(y_true, y_pred))
     }
 
-
 def prepare_global_training_data(
     model: ForecastModel
 ) -> Tuple[pd.DataFrame, List[str], List[str], pd.DataFrame]:
     """
-    Returns:
-      - df_features: DataFrame with dynamic features and encoded IDs (zero consumption types dropped)
-      - feature_cols: List[str] of feature columns
-      - zero_types: List[str] of consumption columns that were all zero
-      - df_raw: Original df with ReportingMonth reset, for later forecasting
+    Function: Perform feature engineering for random forest
     """
     # 1) Get raw data and reset index since ReportingMonth is index
     df_raw = model.dataset.processed_df.copy().reset_index()
@@ -159,30 +158,26 @@ def prepare_global_training_data(
             feature_cols += [f"{cons}_roll{window}_mean", f"{cons}_roll{window}_std"]
 
     # 13) Ensure all feature columns are numeric floats (cast object/Decimal → float)
-
     df[feature_cols] = (df[feature_cols].apply(pd.to_numeric, errors="coerce").fillna(0.0)
                         .astype(float))
     return df, feature_cols, zero_types, df_raw
 
 
-def train_global_xg_models(
+def train_global_rf_models(
     df: pd.DataFrame,
     feature_columns: List[str],
     model: ForecastModel
-) -> Tuple[Dict[str, XGBRegressor], Dict[str, Tuple[pd.DataFrame, pd.Series]]]:
+) -> Tuple[Dict[str, RandomForestRegressor], Dict[str, Tuple[pd.DataFrame, pd.Series]]]:
     """
-    Train one global RF model per non-zero consumption type.
-    Returns:
-      - global_models: dict[consumption_type] -> trained RF
-      - test_sets: dict[consumption_type] -> (X_test, y_test)
+    Function: Train a global random forest model
     """
     ufm_config: ForecastConfig = model.dataset.ufm_config
-    cfg: HyperParameterConfig= model.config
-    global_models: Dict[str, XGBRegressor] = {}
+    cfg = model.config
+    global_models: Dict[str, RandomForestRegressor] = {}
     test_sets: Dict[str, Tuple[pd.DataFrame, pd.Series]] = {}
 
     # Base directory for saving/loading models
-    base_dir = os.path.join("model_configuration", "xg", ufm_config.forecast_method_name, "global")
+    base_dir = os.path.join("model_configuration", "rf", ufm_config.forecast_method_name, "global")
     os.makedirs(base_dir, exist_ok=True)
 
     for cons in cfg.consumption_types:
@@ -193,7 +188,7 @@ def train_global_xg_models(
             rf = joblib.load(model_path)
             logger.info(f"Loaded existing model for {cons} from {model_path}")
             # Re-split for X_test, y_test
-            train_df, test_df = train_test_split_time(df, "ReportingMonth", 0.2)
+            train_df, test_df = train_test_split_time(df, "ReportingMonth", cfg.test_fraction)
             X_test, y_test = test_df[feature_columns], test_df[cons]
             test_sets[cons] = (X_test, y_test)
             global_models[cons] = rf
@@ -218,23 +213,34 @@ def train_global_xg_models(
         X_test, y_test = test_df[feature_columns], test_df[cons]
 
         # Load hyperparameters from config
-        xgb_params_tuple = get_model_hyperparameters("xgboost", ufm_config.model_parameters)
+        rf_params_tuple = get_model_hyperparameters("randomforest", ufm_config.model_parameters)
+        (
+            n_estimators,
+            max_depth,
+            min_samples_split,
+            min_samples_leaf,
+            max_features,
+            bootstrap_flag
+        ) = rf_params_tuple
 
-        (n_estimators, max_depth, learning_rate, subsample, colsample_bytree) = xgb_params_tuple
-
-        xgb = XGBRegressor(
-            n_estimators=int(n_estimators),
-            max_depth=int(max_depth) if int(max_depth) > 0 else None,
-            learning_rate=float(learning_rate),
-            subsample=float(subsample),
-            colsample_bytree=float(colsample_bytree),
+        rf = RandomForestRegressor(
+            n_estimators=n_estimators,
+            max_depth=max_depth if max_depth > 0 else None,
+            min_samples_split=min_samples_split,
+            min_samples_leaf=min_samples_leaf,
+            max_features=max_features,
+            bootstrap=bootstrap_flag,
             random_state=42,
-            n_jobs=-1,
-            objective="reg:squarederror"
+            n_jobs=-1
         )
+        rf.fit(X_train, y_train)
+        # logger.info(f"[Global RF:{cons}] R2={perf['R2']:.3f}, RMSE={perf['RMSE']:.3f}")
 
-        xgb.fit(X_train, y_train)
-        global_models[cons] = xgb
+        # Save model to disk
+        # joblib.dump(rf, model_path)
+        # logger.info(f"Saved model for {cons} to {model_path}")
+
+        global_models[cons] = rf
         test_sets[cons] = (X_test, y_test)
 
     return global_models, test_sets
@@ -243,7 +249,7 @@ def train_global_xg_models(
 def forecast_locally_with_global_models(
     df_feat: pd.DataFrame,
     feature_columns: List[str],
-    global_models: Dict[str, XGBRegressor],
+    global_models: Dict[str, RandomForestRegressor],
     test_sets: Dict[str, Tuple[pd.DataFrame, pd.Series]],
     model: ForecastModel,
     zero_types: List[str],
@@ -251,11 +257,7 @@ def forecast_locally_with_global_models(
     gap_handling: str = "skip"
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
-    1) For each (CustomerID, PodID), compute in‐sample performance using X_test, y_test.
-    2) Build future forecasts only, one row per future date with all consumption types.
-    Returns:
-      - perf_df: DataFrame of in‐sample performance rows
-      - forecast_combined_df: DataFrame of future forecasts
+    Function: Forecast for every customer-pod pair
     """
     ufm_config: ForecastConfig = model.dataset.ufm_config
     full_forecast_dates = pd.date_range(
@@ -272,8 +274,9 @@ def forecast_locally_with_global_models(
     cfg = model.config
     consumption_types = cfg.consumption_types
 
+
     # Will hold ModelPodPerformance objects
-    xg_rows: List[ModelPodPerformance] = []
+    rf_rows: List[ModelPodPerformance] = []
     all_forecasts = []
 
     # Precompute encoding maps from df_feat
@@ -329,7 +332,7 @@ def forecast_locally_with_global_models(
                 UserForecastMethodID=ufm_config.user_forecast_method_id,
                 metrics=metrics
             )
-            xg_rows.append(mpp)
+            rf_rows.append(mpp)
         else:
             # Enough history: evaluate each non-zero consumption type
             for cons in consumption_types:
@@ -353,7 +356,7 @@ def forecast_locally_with_global_models(
                 UserForecastMethodID=ufm_config.user_forecast_method_id,
                 metrics=metrics
             )
-            xg_rows.append(mpp)
+            rf_rows.append(mpp)
         # --- Check for large gap between last observed and requested forecast start ---
         last_date = pod_df["ReportingMonth"].max()
         forecast_start = full_forecast_dates[0]
@@ -391,6 +394,7 @@ def forecast_locally_with_global_models(
                 all_forecasts.append(pd.DataFrame(zero_records))
                 continue
 
+
         # --- Build future feature DataFrame for forecasting ---
         # Only build future horizon from the month after last_date, up to forecast_end
         future_dates = pd.date_range(
@@ -399,7 +403,7 @@ def forecast_locally_with_global_models(
             freq="MS"
         )
         future_rows = []
-        for dt in future_dates:
+        for dt in future_dates :
             row = {
                 "CustomerID": cust_id,
                 "PodID": pod_id,
@@ -460,10 +464,10 @@ def forecast_locally_with_global_models(
 
             # Predict each non‐zero consumption type
             for cons in consumption_types:
-                xg_model = global_models.get(cons)
-                if xg_model is not None and not X_future.empty:
+                rf_model = global_models.get(cons)
+                if rf_model is not None and not X_future.empty:
                     try:
-                        raw_val = float(xg_model.predict(X_future.iloc[[idx]])[0])
+                        raw_val = float(rf_model.predict(X_future.iloc[[idx]])[0])
                         val = max(raw_val, 0.0)
                     except Exception as exception:
                         val = 0.0
@@ -488,22 +492,22 @@ def forecast_locally_with_global_models(
             forecast_records.append(forecast_row)
 
         all_forecasts.append(pd.DataFrame(forecast_records))
-
-    xg_performance_df = pd.DataFrame([m.to_row() for m in xg_rows])
+    rf_performance_df = pd.DataFrame([m.to_row() for m in rf_rows])
     forecast_combined_df = (
         pd.concat(all_forecasts, ignore_index=True)
         if all_forecasts else pd.DataFrame()
     )
-    xg_performance_df.fillna(0,inplace=True)
-    run_forecast_sanity_checks(forecast_combined_df, xg_performance_df, consumption_types, model)
-    return xg_performance_df, forecast_combined_df
+    rf_performance_df.fillna(0,inplace=True)
+    run_forecast_sanity_checks(forecast_combined_df, rf_performance_df, consumption_types, model)
+    return rf_performance_df, forecast_combined_df
+
 
 @profiled_function(category="model_training",enabled=profiling_switch.enabled)
-def train_XGBoost_globally_forecast_locally_with_aggregation(
+def train_random_forest_globally_forecast_locally_with_aggregation(
     model: ForecastModel
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Function: Perform XGBoost forecasting for a particular data selection
+    Function: Perform Random Forest forecasting for a particular data selection
     """
     forecast_method_id = getattr(model.dataset.ufm_config, "forecast_method_id", None)
     if model.dataset is None or model.dataset.processed_df is None:
@@ -530,7 +534,7 @@ def train_XGBoost_globally_forecast_locally_with_aggregation(
         )
         safe_exit(meta["code"], meta["message"])
     df_feat, feature_columns, zero_types, df_raw = prepare_global_training_data(model)
-    global_models, test_sets = train_global_xg_models(df_feat, feature_columns, model)
+    global_models, test_sets = train_global_rf_models(df_feat, feature_columns, model)
     perf_df, forecast_df = forecast_locally_with_global_models(
         df_feat, feature_columns, global_models, test_sets, model, zero_types, df_raw
     )

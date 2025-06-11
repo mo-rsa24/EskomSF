@@ -81,7 +81,10 @@ class ProfilerTimer:
                 insert_profiling_error(
                     log_id=self.log_id,
                     error=error_msg,
-                    traceback=trace
+                    traceback=trace,
+                    error_type="ProfilerError",  # or some code that identifies the kind of error
+                    severity="medium",  # or whatever severity levels your system expects
+                    component=self.module  # perhaps the module name, or function, etc.
                 )
 
         except Exception as logging_error:

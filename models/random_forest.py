@@ -2,7 +2,7 @@ import logging
 
 import pandas as pd
 
-from models.algorithms.tree_algorithms.random_forest.random_forest import run_rf_forecast_pipeline
+from models.algorithms.tree_algorithms.random_forest import train_random_forest_globally_forecast_locally_with_aggregation
 from models.base import ForecastModel
 
 logger = logging.getLogger(__name__)
@@ -13,9 +13,7 @@ class RandomForestModel(ForecastModel):
     def train(self) -> pd.DataFrame:
         logger.info("🚀 [RFModel] Starting training...")
 
-        perf_df_all, forecast_df_all = run_rf_forecast_pipeline(self)
+        result = train_random_forest_globally_forecast_locally_with_aggregation(self)
         logger.info("✅ [RFModel] Training complete.")
 
-        self.performance_df = perf_df_all
-        self.forecast_df = forecast_df_all
-        return perf_df_all
+        return result

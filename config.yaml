@@ -83,7 +83,7 @@ tables:
 selected_columns: ["OffPeakConsumption","PeakConsumption","StandardConsumption","Block1Consumption","Block2Consumption","Block3Consumption","Block4Consumption","NonTOUConsumption"]
 consumption_types: ["OffPeakConsumption","PeakConsumption","StandardConsumption","Block1Consumption","Block2Consumption","Block3Consumption","Block4Consumption","NonTOUConsumption"]
 mode: "train"
-log: true
+log: false
 # This field may come from the database (and may be an empty string)
 model_parameters: ""
 

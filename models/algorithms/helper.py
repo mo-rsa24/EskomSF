@@ -6,7 +6,12 @@ import pandas as pd
 
 from data import grouped_engineer_features
 from evaluation.performance import ModelPodPerformance, build_forecast_df, finalize_model_performance_df
+from models.base import ForecastModel
 
+# Setup logger with basic configuration
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 def _get_customer_data(df: pd.DataFrame, customer_id: str) -> pd.DataFrame:
     filtered = df[df['CustomerID'] == customer_id].sort_values('PodID')
@@ -45,6 +50,24 @@ def _apply_log(series: pd.Series, log: bool) -> pd.Series:
     return series
 
 from sa_holiday_loader import get_sa_holidays
+
+def ensure_numeric_consumption_types(df_raw: pd.DataFrame, model: ForecastModel) -> pd.DataFrame:
+    """
+    For each column in model.config.consumption_types:
+      - If it exists in df_raw and is not already numeric, coerce it to numeric.
+      - Log each conversion via logger.info.
+    """
+    for col in model.config.consumption_types:
+        if col not in df_raw.columns:
+            logger.info(f"⚠️Column '{col}' not found in DataFrame; skipping.")
+            continue
+
+        if not pd.api.types.is_numeric_dtype(df_raw[col]):
+            df_raw[col] = pd.to_numeric(df_raw[col], errors="coerce")
+            logger.info(f"💡 Converted column '{col}' to numeric dtype.")
+        else:
+            logger.info(f"⚠️ Column '{col}' already numeric; no conversion needed.")
+    return df_raw
 
 def extract_exogenous_features(
     df: pd.DataFrame,

@@ -1,4 +1,4 @@
-from models.algorithms.tree_algorithms.random_forest.utils import frequency_encode, target_encode
+from models.algorithms.time_series_models.random_forest.utils import frequency_encode, target_encode
 
 
 class EncoderFactory:
