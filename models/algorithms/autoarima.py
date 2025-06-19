@@ -158,8 +158,10 @@ def forecast_arima_for_single_customer(model: ForecastModel):
         forecast_combined_df = pd.concat(all_forecasts, ignore_index=True)
         run_forecast_sanity_checks(forecast_combined_df,arima_performance,consumption_types,model)
         return arima_performance, forecast_combined_df
-    except Exception as e:
-        meta = get_error_metadata("ModelFitFailure", {"exception": str(e)})
+    except ValueError as ve:
+        print()
+    except Exception as z:
+        meta = get_error_metadata("ModelFitFailure", {"exception": str(z)})
         insert_profiling_error(
             log_id=None,
             error=meta["message"],
@@ -300,11 +302,14 @@ def forecast_for_podel_id(
                 pod_id, customer_id, consumption_type,
                 future_forecast, metrics, baseline_metrics
             ))
-        except Exception as e:
-            meta = get_error_metadata("ModelFitFailure", {"exception": str(e)})
-            insert_profiling_error(log_id=None, error=meta["message"], traceback="",  error_type="ModelFitFailure",severity=meta["severity"], component=meta["component"])
-            forecast = pd.Series([0] * steps, index=forecast_horizon)
-            data.append(_collect_metrics(pod_id, customer_id, consumption_type, forecast))
+        except Exception as g:
+            try:
+                meta = get_error_metadata("ModelFitFailure", {"exception": str(g)})
+                insert_profiling_error(log_id=None, error=meta["message"], traceback="",  error_type="ModelFitFailure",severity=meta["severity"], component=meta["component"])
+                forecast = pd.Series([0] * steps, index=forecast_horizon)
+                data.append(_collect_metrics(pod_id, customer_id, consumption_type, forecast))
+            except UnboundLocalError as ul:
+                print()
             continue
     return PodIDPerformanceData(
         pod_id=pod_id,

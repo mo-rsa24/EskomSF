@@ -22,7 +22,7 @@ INNER JOIN
     [dbo].[UserForecastMethod] AS ufm ON dbt.UserForecastMethodID = ufm.UserForecastMethodID
 INNER JOIN
     [dbo].[DimForecastMethod] AS dfm ON ufm.ForecastMethodID = dfm.ForecastMethodID
-WHERE ufm.UserForecastMethodID = 9
+-- WHERE ufm.UserForecastMethodID = 405
 ORDER BY
     dbt.CreationDate DESC;
 
@@ -34,7 +34,7 @@ ORDER BY
 
 -- Load the raw time-series data for forecasting.
 -- 🔁 Change 221 to the appropriate UserForecastMethodID (e.g., from query above).
-SELECT * FROM dbo.PredictiveInputData(96);
+SELECT * FROM dbo.PredictiveInputData(132);
 -- ===============================
 -- 👁️ 2. VALIDATE POD → CUSTOMER MAPPINGS
 -- ===============================
@@ -52,7 +52,7 @@ WHERE CustomerID IN ('7056074487','6241474325');
 
 -- Shows saved forecast values per series.
 -- 📌 Replace 219 with actual UserForecastMethodID used in your model.
-SELECT * FROM dbo.DataBrickTasks where DatabrickID = 11;
+SELECT * FROM dbo.DataBrickTasks where DatabrickID = 2;
 SELECT * FROM dbo.ForecastFact
 WHERE UserForecastMethodID = 11;
 
@@ -68,3 +68,6 @@ SELECT TOP 15 *
 FROM dbo.StatisticalPerformanceMetrics
 WHERE DatabrickID = 1
 ORDER BY ID DESC;
+
+
+SELECT * FROM dbo.ForecastFact WHERE UserForecastMethodID = 404 AND PodID = 8827669849;

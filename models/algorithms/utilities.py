@@ -182,16 +182,66 @@ def save_best_params_rf(
 
 def prepare_time_series_data(
     df: pd.DataFrame,
-    consumption_type: str
+    consumption_type: str,
+    strategy: str = "drop",  # or "drop"
 ) -> pd.Series:
     """
     Convert a specified consumption column into a time-indexed Series.
-    Ensures monthly frequency, fills missing, etc.
+    Handles duplicate timestamps gracefully with specified strategy.
     """
     series = pd.to_numeric(df[consumption_type], errors='coerce')
-    series.index = pd.to_datetime(series.index)  # convert index
-    series = series.asfreq('MS').fillna(0)       # monthly start freq, fill missing
+    series.index = pd.to_datetime(series.index)
+
+    # Handle duplicate timestamps
+    if series.index.duplicated().any():
+        logging.info("🔁 Duplicate timestamps detected in time index.")
+        if strategy == "sum":
+            series = series.groupby(series.index).sum()
+        elif strategy == "mean":
+            series = series.groupby(series.index).mean()
+        elif strategy == "drop":
+            series = series[~series.index.duplicated(keep='first')]
+        else:
+            raise ValueError(f"Unknown duplicate handling strategy: {strategy}")
+
+    # Resample to monthly frequency
+    series = series.asfreq('MS').fillna(0)
     return series
+
+
+import pandas as pd
+import logging
+
+
+def process_reporting_months(
+        df_raw: pd.DataFrame,
+        strategy: str = "drop"  # Options: "drop", "first", "last"
+) -> pd.DataFrame:
+    df = df_raw.copy()
+
+    # Ensure ReportingMonth is datetime
+    # df['ReportingMonth'] = pd.to_datetime(df['ReportingMonth'], errors='coerce')
+
+    # Build subset key
+    consumption_cols = [col for col in df.columns if "Consumption" in col]
+    base_keys = ['ReportingMonth', 'PodID', 'CustomerID']
+    subset_keys = base_keys + consumption_cols
+
+    # Detect duplicates
+    duplicates = df.duplicated(subset=subset_keys, keep=False)
+    if duplicates.any():
+        logging.info(f"🔁 Found {duplicates.sum()} duplicate rows based on: {subset_keys}")
+
+        if strategy == "drop":
+            # df = df[~duplicates]
+            df = df.drop_duplicates(subset=subset_keys, keep='first')
+        elif strategy == "last":
+            # df = df[~df.duplicated(subset=subset_keys, keep='last')]
+            df = df.drop_duplicates(subset=subset_keys, keep='first')
+        else:
+            raise ValueError(f"❌ Unknown deduplication strategy: {strategy}")
+
+    return df
 
 
 from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error

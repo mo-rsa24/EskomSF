@@ -21,6 +21,7 @@ from docstring.utilities import profiled_function
 from evaluation.performance import ModelPodPerformance
 from hyperparameters import get_model_hyperparameters
 from models.algorithms.helper import ensure_numeric_consumption_types
+from models.algorithms.utilities import process_reporting_months
 from models.base import ForecastModel
 from models.forecast_validation import run_forecast_sanity_checks
 from profiler.errors.utils import get_error_metadata
@@ -67,6 +68,7 @@ def prepare_global_training_data(
     """
     # 1) Get raw data and reset index since ReportingMonth is index
     df_raw = model.dataset.processed_df.copy().reset_index()
+    df_raw = process_reporting_months(df_raw)
     ufm_config: ForecastConfig = model.dataset.ufm_config
     df_raw = ensure_numeric_consumption_types(df_raw, model)
     # 2) Determine forecast horizon in months
@@ -76,7 +78,8 @@ def prepare_global_training_data(
     horizon = max(horizon, 0)
 
     # 3) Build dynamic lag_list and rolling_windows
-    base_lags = [1, 2, 3, 6]
+    # base_lags = [1, 2, 3, 6]
+    base_lags = []
     year_lags = [12 * i for i in range(1, horizon // 12 + 1)]
     lag_list = sorted(set(base_lags + year_lags))
 
@@ -105,10 +108,10 @@ def prepare_global_training_data(
 
     # 7) Add time index and seasonal features
     df = df_raw.copy()
-    df["TimeIndex"] = compute_time_index(df, "ReportingMonth")
-    df["month"] = df["ReportingMonth"].dt.month
-    df["month_sin"] = np.sin(2 * np.pi * df["month"] / 12)
-    df["month_cos"] = np.cos(2 * np.pi * df["month"] / 12)
+    # df["TimeIndex"] = compute_time_index(df, "ReportingMonth")
+    # df["month"] = df["ReportingMonth"].dt.month
+    # df["month_sin"] = np.sin(2 * np.pi * df["month"] / 12)
+    # df["month_cos"] = np.cos(2 * np.pi * df["month"] / 12)
 
     # 8) Dynamic lag features for each non-zero consumption type
     df = df.sort_values(["CustomerID", "PodID", "ReportingMonth"]).reset_index(drop=True)
@@ -120,21 +123,21 @@ def prepare_global_training_data(
             )
 
     # 9) Dynamic rolling statistics
-    for cons in cfg.consumption_types:
-        for window in rolling_windows:
-            df[f"{cons}_roll{window}_mean"] = (
-                df.groupby(["CustomerID", "PodID"])[cons]
-                  .shift(1)
-                  .rolling(window=window)
-                  .mean()
-            )
-            df[f"{cons}_roll{window}_std"] = (
-                df.groupby(["CustomerID", "PodID"])[cons]
-                  .shift(1)
-                  .rolling(window=window)
-                  .std()
-                  .fillna(0.0)
-            )
+    # for cons in cfg.consumption_types:
+    #     for window in rolling_windows:
+    #         df[f"{cons}_roll{window}_mean"] = (
+    #             df.groupby(["CustomerID", "PodID"])[cons]
+    #               .shift(1)
+    #               .rolling(window=window)
+    #               .mean()
+    #         )
+    #         df[f"{cons}_roll{window}_std"] = (
+    #             df.groupby(["CustomerID", "PodID"])[cons]
+    #               .shift(1)
+    #               .rolling(window=window)
+    #               .std()
+    #               .fillna(0.0)
+    #         )
 
     # 10) Drop rows missing required lags
     required_cols = []
@@ -154,8 +157,8 @@ def prepare_global_training_data(
     feature_cols = ["TimeIndex", "month_sin", "month_cos"] + id_features
     for cons in cfg.consumption_types:
         feature_cols += [f"{cons}_lag{lag}" for lag in lag_list]
-        for window in rolling_windows:
-            feature_cols += [f"{cons}_roll{window}_mean", f"{cons}_roll{window}_std"]
+        # for window in rolling_windows:
+        #     feature_cols += [f"{cons}_roll{window}_mean", f"{cons}_roll{window}_std"]
 
     # 13) Ensure all feature columns are numeric floats (cast object/Decimal → float)
     df[feature_cols] = (df[feature_cols].apply(pd.to_numeric, errors="coerce").fillna(0.0)
@@ -432,21 +435,21 @@ def forecast_locally_with_global_models(
                     combined.groupby(["CustomerID", "PodID"])[cons]
                             .shift(lag)
                 )
-        for cons in consumption_types:
-            for window in cfg.rolling_windows:
-                combined[f"{cons}_roll{window}_mean"] = (
-                    combined.groupby(["CustomerID", "PodID"])[cons]
-                            .shift(1)
-                            .rolling(window=window)
-                            .mean()
-                )
-                combined[f"{cons}_roll{window}_std"] = (
-                    combined.groupby(["CustomerID", "PodID"])[cons]
-                            .shift(1)
-                            .rolling(window=window)
-                            .std()
-                            .fillna(0.0)
-                )
+        # for cons in consumption_types:
+        #     for window in cfg.rolling_windows:
+        #         combined[f"{cons}_roll{window}_mean"] = (
+        #             combined.groupby(["CustomerID", "PodID"])[cons]
+        #                     .shift(1)
+        #                     .rolling(window=window)
+        #                     .mean()
+        #         )
+        #         combined[f"{cons}_roll{window}_std"] = (
+        #             combined.groupby(["CustomerID", "PodID"])[cons]
+        #                     .shift(1)
+        #                     .rolling(window=window)
+        #                     .std()
+        #                     .fillna(0.0)
+        #         )
 
         # Extract only future rows’ features
         mask_fut = combined["ReportingMonth"].isin(forecast_dates)
