@@ -34,7 +34,7 @@ ORDER BY
 
 -- Load the raw time-series data for forecasting.
 -- 🔁 Change 221 to the appropriate UserForecastMethodID (e.g., from query above).
-SELECT * FROM dbo.PredictiveInputData(132);
+SELECT * FROM dbo.PredictiveInputData(418);
 -- ===============================
 -- 👁️ 2. VALIDATE POD → CUSTOMER MAPPINGS
 -- ===============================

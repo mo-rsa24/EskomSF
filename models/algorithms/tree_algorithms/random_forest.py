@@ -21,7 +21,6 @@ from docstring.utilities import profiled_function
 from evaluation.performance import ModelPodPerformance
 from hyperparameters import get_model_hyperparameters
 from models.algorithms.helper import ensure_numeric_consumption_types
-from models.algorithms.utilities import process_reporting_months
 from models.base import ForecastModel
 from models.forecast_validation import run_forecast_sanity_checks
 from profiler.errors.utils import get_error_metadata
@@ -68,7 +67,6 @@ def prepare_global_training_data(
     """
     # 1) Get raw data and reset index since ReportingMonth is index
     df_raw = model.dataset.processed_df.copy().reset_index()
-    df_raw = process_reporting_months(df_raw)
     ufm_config: ForecastConfig = model.dataset.ufm_config
     df_raw = ensure_numeric_consumption_types(df_raw, model)
     # 2) Determine forecast horizon in months
@@ -108,10 +106,10 @@ def prepare_global_training_data(
 
     # 7) Add time index and seasonal features
     df = df_raw.copy()
-    # df["TimeIndex"] = compute_time_index(df, "ReportingMonth")
-    # df["month"] = df["ReportingMonth"].dt.month
-    # df["month_sin"] = np.sin(2 * np.pi * df["month"] / 12)
-    # df["month_cos"] = np.cos(2 * np.pi * df["month"] / 12)
+    df["TimeIndex"] = compute_time_index(df, "ReportingMonth")
+    df["month"] = df["ReportingMonth"].dt.month
+    df["month_sin"] = np.sin(2 * np.pi * df["month"] / 12)
+    df["month_cos"] = np.cos(2 * np.pi * df["month"] / 12)
 
     # 8) Dynamic lag features for each non-zero consumption type
     df = df.sort_values(["CustomerID", "PodID", "ReportingMonth"]).reset_index(drop=True)

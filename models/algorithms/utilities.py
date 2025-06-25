@@ -209,20 +209,8 @@ def prepare_time_series_data(
     return series
 
 
-import pandas as pd
-import logging
-
-
-def process_reporting_months(
-        df_raw: pd.DataFrame,
-        strategy: str = "drop"  # Options: "drop", "first", "last"
-) -> pd.DataFrame:
-    df = df_raw.copy()
-
-    # Ensure ReportingMonth is datetime
-    # df['ReportingMonth'] = pd.to_datetime(df['ReportingMonth'], errors='coerce')
-
-    # Build subset key
+def process_reporting_months(df_raw: pd.DataFrame) -> pd.DataFrame:
+    df = df_raw.copy().reset_index()
     consumption_cols = [col for col in df.columns if "Consumption" in col]
     base_keys = ['ReportingMonth', 'PodID', 'CustomerID']
     subset_keys = base_keys + consumption_cols
@@ -231,16 +219,8 @@ def process_reporting_months(
     duplicates = df.duplicated(subset=subset_keys, keep=False)
     if duplicates.any():
         logging.info(f"🔁 Found {duplicates.sum()} duplicate rows based on: {subset_keys}")
-
-        if strategy == "drop":
-            # df = df[~duplicates]
-            df = df.drop_duplicates(subset=subset_keys, keep='first')
-        elif strategy == "last":
-            # df = df[~df.duplicated(subset=subset_keys, keep='last')]
-            df = df.drop_duplicates(subset=subset_keys, keep='first')
-        else:
-            raise ValueError(f"❌ Unknown deduplication strategy: {strategy}")
-
+        df = df.drop_duplicates(subset=subset_keys, keep='first')
+    df.set_index('ReportingMonth', inplace=True)
     return df
 
 
