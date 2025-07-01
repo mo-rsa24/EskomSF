@@ -253,7 +253,7 @@ def build_forecast_df(
     # 4) Build the DataFrame
     df = pd.DataFrame(data)
 
-    df['CustomerID'] = df['CustomerID'].astype('int64')
+    # df['CustomerID'] = df['CustomerID'].astype('int64')
     # 5) Round the consumption columns and fill missing with zero
     for ct in cons_types:
         if ct in df.columns:

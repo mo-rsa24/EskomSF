@@ -1,3 +1,4 @@
+import logging
 from typing import Union
 
 from statsmodels.tsa.seasonal import STL
@@ -190,8 +191,11 @@ def recursive_forecast(
         seasonal = season_map[m]
         # construct features
         row = {}
+        logging.info(f"⌚ Date: {date} (month {m})")
         for lag in lags:
+            logging.info(f"⌚ Date: {date} (month {m}) - Lag = {lag} months")
             row[f"ds_lag{lag}"] = history_ds.loc[date - pd.DateOffset(months=lag)]
+        logging.info(f"----------------------------------")
         for w in windows:
             window = history_ds.loc[(date - pd.DateOffset(months=w)) : (date - pd.DateOffset(months=1))]
             row[f"ds_roll_mean_{w}m"] = window.mean()
