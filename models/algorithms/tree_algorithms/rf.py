@@ -169,9 +169,16 @@ def forecast_for_podel_id(
         year_windows = [12 * i for i in range(1, forecast_horizon_months // 12 + 1)]
         windows = base_windows + year_windows
 
-        pod_df, feature_cols, stl_obj = engineer_data(pod_df, consumption_type, lags, windows)
+        pod_df, feature_cols, stl_obj, history_series = engineer_data(pod_df, consumption_type, lags, windows)
 
         train_df, test_df = split_train_test(pod_df, test_months)
+        if train_df.empty or test_df.empty:
+            logger.warning(
+                f"🚫 Not enough data after split for {consumption_type} @ Pod {pod_id}. Skipping."
+            )
+            forecast = pd.Series([0] * len(forecast_horizon), index=forecast_horizon)
+            data.append(_collect_metrics(pod_id, customer_id, consumption_type, forecast))
+            continue
         X_train, y_train = train_df[feature_cols], train_df["deseasoned"]
         X_test, y_test = test_df[feature_cols], test_df["deseasoned"]
 
@@ -198,7 +205,7 @@ def forecast_for_podel_id(
 
         metrics, baseline_metrics = evaluate_predictions(y_test, test_pred)
 
-        fc_df = recursive_forecast(pod_df, stl_obj, rf_model,
+        fc_df = recursive_forecast(history_series, stl_obj, rf_model,
                                    feature_cols, start_fc, end_fc,
                                    lags, windows)
         future_forecast = fc_df['forecast']

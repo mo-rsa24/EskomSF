@@ -22,7 +22,7 @@ INNER JOIN
     [dbo].[UserForecastMethod] AS ufm ON dbt.UserForecastMethodID = ufm.UserForecastMethodID
 INNER JOIN
     [dbo].[DimForecastMethod] AS dfm ON ufm.ForecastMethodID = dfm.ForecastMethodID
--- WHERE ufm.UserForecastMethodID = 405
+-- WHERE dfm.Method = 'XGBoost'
 ORDER BY
     dbt.CreationDate DESC;
 

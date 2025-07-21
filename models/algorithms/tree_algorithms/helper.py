@@ -1,4 +1,3 @@
-import logging
 from typing import Union
 
 from statsmodels.tsa.seasonal import STL
@@ -16,8 +15,9 @@ def engineer_data(df: pd.DataFrame, cons: str, lags: list, windows: list):
     df = engineer_lags(df, "deseasoned", lags)
     df = engineer_rolling(df, "deseasoned", windows)
     df = engineer_interactions(df, lags)
+    full_history = df["deseasoned"].copy()
     df, feature_cols = assemble_features(df, lags, windows)
-    return df, feature_cols, stl_obj
+    return df, feature_cols, stl_obj, full_history
 
 def stl_decompose(df: pd.DataFrame, target: str, period: int = 12) -> (pd.DataFrame, STL):
     """
@@ -162,7 +162,7 @@ def train_xgb(X: pd.DataFrame, y: pd.Series, xgb_params_tuple) -> XGBRegressor:
 
 
 def recursive_forecast(
-    df: pd.DataFrame,
+    history_ds: pd.Series,
     stl_obj: STL,
     rf: Union[RandomForestRegressor | XGBRegressor],
     features: list,
@@ -178,7 +178,7 @@ def recursive_forecast(
     season_map = stl_obj.seasonal.groupby(stl_obj.seasonal.index.month).mean()
 
     # 2) keep a running deseasoned series for recursive lags
-    history_ds = df["deseasoned"].copy()
+    history_ds = history_ds.copy()
 
     # 3) precompute which of your lags are "yearly" (multiples of 12)
     yearly_lags = [lag for lag in lags if lag % 12 == 0]
@@ -191,11 +191,12 @@ def recursive_forecast(
         seasonal = season_map[m]
         # construct features
         row = {}
-        logging.info(f"⌚ Date: {date} (month {m})")
         for lag in lags:
-            logging.info(f"⌚ Date: {date} (month {m}) - Lag = {lag} months")
-            row[f"ds_lag{lag}"] = history_ds.loc[date - pd.DateOffset(months=lag)]
-        logging.info(f"----------------------------------")
+            lag_date = date - pd.DateOffset(months=lag)
+            if lag_date in history_ds.index:
+                row[f"ds_lag{lag}"] = history_ds.loc[lag_date]
+            else:
+                row[f"ds_lag{lag}"] = np.nan
         for w in windows:
             window = history_ds.loc[(date - pd.DateOffset(months=w)) : (date - pd.DateOffset(months=1))]
             row[f"ds_roll_mean_{w}m"] = window.mean()
