@@ -92,7 +92,7 @@ def query_to_df(conn, query: str):
         )
         safe_exit(meta["code"], meta["message"])
 
-@profiled_function(category="database_call",enabled=profiling_switch.enabled,)
+# @profiled_function(category="database_call",enabled=profiling_switch.enabled,)
 def get_user_forecast_data(databrick_task_id=39, spark: SparkSession = None ):
     """
     Function: Retrieves the most recent user forecast method configuration ( DataBrickTasks, UserForecastMethod, and DimForecastMethod) details associated with a specific Databrick task.

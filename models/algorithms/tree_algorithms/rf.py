@@ -20,7 +20,7 @@ logger.setLevel(logging.INFO)
 
 
 
-@profiled_function(category="model_training",enabled=profiling_switch.enabled)
+# @profiled_function(category="model_training",enabled=profiling_switch.enabled)
 def forecast_rf_for_single_customer(model: ForecastModel):
     """
     Function: Forecast Random Forest models for a single customer using information embedded in the model instance.
@@ -204,15 +204,17 @@ def forecast_for_podel_id(
         # plot_train_test(train_df, test_df, consumption_type, train_pred, test_pred)
 
         metrics, baseline_metrics = evaluate_predictions(y_test, test_pred)
-
-        fc_df = recursive_forecast(history_series, stl_obj, rf_model,
-                                   feature_cols, start_fc, end_fc,
-                                   lags, windows)
-        future_forecast = fc_df['forecast']
-        data.append(_collect_metrics(
-            pod_id, customer_id, consumption_type,
-            future_forecast, metrics, baseline_metrics
-        ))
+        try:
+            fc_df = recursive_forecast(history_series, stl_obj, rf_model,
+                                       feature_cols, start_fc, end_fc,
+                                       lags, windows)
+            future_forecast = fc_df['forecast']
+            data.append(_collect_metrics(
+                pod_id, customer_id, consumption_type,
+                future_forecast, metrics, baseline_metrics
+            ))
+        except Exception as es:
+            print("Damn", es)
         # plot_forecast(pod_df, fc_df, consumption_type, end_fc)
     return PodIDPerformanceData(
         pod_id=pod_id,
