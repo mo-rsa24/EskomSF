@@ -24,7 +24,6 @@ from profiler.profiler_switch import profiling_switch
 from utils.exit_handler import safe_exit
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
 
 
 def frequency_encode(series: pd.Series) -> pd.Series:

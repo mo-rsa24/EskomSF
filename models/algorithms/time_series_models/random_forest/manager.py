@@ -13,7 +13,6 @@ from models.algorithms.time_series_models.random_forest.rf_factory import Encode
 from models.algorithms.time_series_models.random_forest.utils import evaluate_regression, train_test_split_time
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
 
 
 class RFModelManager:

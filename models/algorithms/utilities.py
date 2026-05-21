@@ -215,12 +215,32 @@ def process_reporting_months(df_raw: pd.DataFrame) -> pd.DataFrame:
     base_keys = ['ReportingMonth', 'PodID', 'CustomerID']
     subset_keys = base_keys + consumption_cols
 
-    # Detect duplicates
+    # First pass: drop exact duplicates (identical across all columns)
     duplicates = df.duplicated(subset=subset_keys, keep=False)
     if duplicates.any():
         logging.info(f"🔁 Found {duplicates.sum()} duplicate rows based on: {subset_keys}")
         df = df.drop_duplicates(subset=subset_keys, keep='first')
+
+    # Second pass: resolve conflicting rows for the same pod/period.
+    # A pod can have multiple CustomerIDs (billing changes, sub-meters) or a zero-row
+    # alongside a real-value row from a different data source. Since forecasting is
+    # pod-level (not customer-level), collapse to one row per (ReportingMonth, PodID)
+    # by keeping the row with the highest total consumption.
+    pod_period_keys = ['ReportingMonth', 'PodID']
+    if df.duplicated(subset=pod_period_keys).any():
+        n_conflict = df.duplicated(subset=pod_period_keys, keep=False).sum()
+        logging.warning(
+            f"⚠️ {n_conflict} rows share (ReportingMonth, PodID) with conflicting values "
+            f"(multiple customers or zero-placeholder rows) — keeping the row with the "
+            f"highest total consumption per period."
+        )
+        df['_total'] = df[consumption_cols].sum(axis=1)
+        df = (df.sort_values('_total', ascending=False)
+                .drop_duplicates(subset=pod_period_keys, keep='first')
+                .drop(columns=['_total']))
+
     df.set_index('ReportingMonth', inplace=True)
+    df.sort_index(inplace=True)
     return df
 
 

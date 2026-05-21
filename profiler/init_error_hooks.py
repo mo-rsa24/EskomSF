@@ -2,14 +2,16 @@ import re
 import warnings
 import sys
 import traceback
+import logging
 
 from db.utilities import clean_text
+
+logger = logging.getLogger(__name__)
 
 
 def log_warning(message, category, filename, lineno, file=None, line=None):
     from db.error_logger import insert_profiling_error
     tb = f"{filename}:{lineno} - {category.__name__}: {message}"
-    print(f"[Warning Intercepted] {tb}")  # Optional console output
 
     insert_profiling_error(
         log_id=None,  # Or use latest profiling log ID if available
@@ -24,8 +26,7 @@ def log_uncaught_exception(exc_type, exc_value, exc_tb):
     from db.error_logger import insert_profiling_error
     error_msg = str(exc_value)
     tb_str = ''.join(traceback.format_exception(exc_type, exc_value, exc_tb))
-
-    print(f"[Uncaught Exception] {error_msg}")  # Optional console output
+    logger.error("Uncaught exception: %s", clean_error_message(error_msg))
 
     insert_profiling_error(
         log_id=None,

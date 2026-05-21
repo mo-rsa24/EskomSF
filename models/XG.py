@@ -7,7 +7,6 @@ from models.algorithms.tree_algorithms.xgb import forecast_xgb_for_single_custom
 from models.base import ForecastModel
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
 
 class XGBoostModel(ForecastModel):
     def train(self) -> pd.DataFrame:

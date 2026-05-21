@@ -10,8 +10,6 @@ from profiler.errors.utils import get_error_metadata
 import logging
 
 from utils.exit_handler import safe_exit
-
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 performance_columns = [
@@ -61,7 +59,7 @@ def run_forecast_sanity_checks(
             severity=meta["severity"],
             component=meta["component"]
         )
-        logger.info("🚫 All forecasted values are zero. Aborting model output due to invalid forecasts.")
+        logger.warning("All forecasted values are zero. Aborting model output due to invalid forecasts.")
         safe_exit(meta["code"], meta["message"])
 
     # Performance Metric Check
@@ -79,5 +77,5 @@ def run_forecast_sanity_checks(
             severity=meta["severity"],
             component=meta["component"]
         )
-        logger.info("🚫 All performance metrics are zero or invalid. Aborting due to failed model evaluation.")
+        logger.warning("All performance metrics are zero or invalid. Aborting due to failed model evaluation.")
         safe_exit(meta["code"], meta["message"])

@@ -6,7 +6,6 @@ from models.algorithms.autoarima import forecast_arima_for_single_customer
 from models.base import ForecastModel
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
 
 class SARIMAModel(ForecastModel):
     def train(self) -> pd.DataFrame:

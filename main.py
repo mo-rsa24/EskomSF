@@ -25,9 +25,29 @@ def main():
     parser = argparse.ArgumentParser(description="Forecasting Engine Runner")
     parser.add_argument("--databrick_task_id", type=int, default=1,
                         help="Databrick task ID for forecasting")
+    parser.add_argument("--csv_path", type=str, default=None,
+                        help="Path to a CSV dataset file. When provided, skips all DB calls.")
+    parser.add_argument("--model", type=str, default="xgboost",
+                        choices=["arima", "sarima", "randomforest", "xgboost"],
+                        help="Model type to use in CSV mode (ignored when using --databrick_task_id)")
+    parser.add_argument("--start_date", type=str, default=None,
+                        help="Forecast start date (YYYY-MM-DD), used in CSV mode")
+    parser.add_argument("--end_date", type=str, default=None,
+                        help="Forecast end date (YYYY-MM-DD), used in CSV mode")
     args = parser.parse_args()
 
-    dataset = ForecastDataset(args.databrick_task_id, True)
+    if args.csv_path:
+        logging.info(f"📂 CSV mode enabled: {args.csv_path}")
+        dataset = ForecastDataset(
+            databrick_task_id=0,
+            save=True,
+            csv_path=args.csv_path,
+            model=args.model,
+            start_date=args.start_date,
+            end_date=args.end_date,
+        )
+    else:
+        dataset = ForecastDataset(args.databrick_task_id, True)
     dataset.load_data()
 
     preprocessed_info = dataset.preprocess()

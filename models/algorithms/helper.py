@@ -8,14 +8,11 @@ from data import grouped_engineer_features
 from evaluation.performance import ModelPodPerformance, build_forecast_df, finalize_model_performance_df
 from models.base import ForecastModel
 
-# Setup logger with basic configuration
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
 
 def _get_customer_data(df: pd.DataFrame, customer_id: str) -> pd.DataFrame:
     filtered = df[df['CustomerID'] == customer_id].sort_values('PodID')
-    logging.info(f"📊 Found {len(filtered)} rows for CustomerID={customer_id}")
+    logger.debug(f"Found {len(filtered)} rows for CustomerID={customer_id}")
     return filtered
 
 def _convert_to_model_performance_row(pod_perf, customer_id, pod_id, config):
@@ -59,14 +56,14 @@ def ensure_numeric_consumption_types(df_raw: pd.DataFrame, model: ForecastModel)
     """
     for col in model.config.consumption_types:
         if col not in df_raw.columns:
-            logger.info(f"⚠️Column '{col}' not found in DataFrame; skipping.")
+            logger.debug(f"Column '{col}' not found in DataFrame; skipping.")
             continue
 
         if not pd.api.types.is_numeric_dtype(df_raw[col]):
             df_raw[col] = pd.to_numeric(df_raw[col], errors="coerce")
-            logger.info(f"💡 Converted column '{col}' to numeric dtype.")
+            logger.debug(f"Converted column '{col}' to numeric dtype.")
         else:
-            logger.info(f"⚠️ Column '{col}' already numeric; no conversion needed.")
+            logger.debug(f"Column '{col}' already numeric; no conversion needed.")
     return df_raw
 
 def extract_exogenous_features(
@@ -123,7 +120,7 @@ def _aggregate_forecast_outputs(consumer_perf, arima_rows, all_forecasts):
     final_perf_df = consumer_perf.convert_pod_id_performance_data(all_perf_df)
     arima_performance_df = pd.DataFrame([m.to_row() for m in arima_rows])
     forecast_combined_df = pd.concat(all_forecasts, ignore_index=True)
-    logging.info("✅ Forecast aggregation complete.")
+    logger.debug("Forecast aggregation complete.")
     return all_perf_df, final_perf_df, arima_performance_df, forecast_combined_df
 
 

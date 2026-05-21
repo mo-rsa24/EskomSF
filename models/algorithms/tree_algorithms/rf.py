@@ -13,10 +13,7 @@ from models.base import ForecastModel
 from models.forecast_validation import run_forecast_sanity_checks
 from profiler.errors.validation import invalid_length, invalid_series, invalid_forecast_horizon
 
-# Setup logger with basic configuration
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
 
 
 
@@ -214,7 +211,12 @@ def forecast_for_podel_id(
                 future_forecast, metrics, baseline_metrics
             ))
         except Exception as es:
-            print("Damn", es)
+            logger.exception(
+                "Recursive forecast failed for customer=%s pod=%s consumption_type=%s",
+                customer_id,
+                pod_id,
+                consumption_type,
+            )
         # plot_forecast(pod_df, fc_df, consumption_type, end_fc)
     return PodIDPerformanceData(
         pod_id=pod_id,

@@ -4,7 +4,6 @@ from models.algorithms.autoarima import forecast_arima_for_single_customer
 from models.base import ForecastModel
 import logging
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
 
 
 class ARIMAModel(ForecastModel):

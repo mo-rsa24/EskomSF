@@ -1,11 +1,35 @@
-*.csv
-dataset/*
-model_configuration/*
-pipeline_cache/*
-*.ipynb_checkpoints/*
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+pipeline_cache/
+outputs/
+dataset/
+
+# Virtualenvs
+.venv/
+venv/
+env/
+
+# Editor / tooling
+.vscode/
 .idea/
-Backup of previous working version/*
-*.pkl
-.ipynb_checkpoints/*
-sqljdbc_12.10/*
-venv/*
+.claude/
+
+# Scratch data at repo root (keep data/ subtrees intact)
+/*.csv
+/dataset*.csv
+/df.csv
+/duplicates.csv
+/File.csv
+/UFM-*.csv
+/UFM*DBID*.csv
+/b._csv
+
+# Stray import dir
+/eskom/
+
+# OS
+.DS_Store
+Thumbs.db

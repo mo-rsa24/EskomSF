@@ -7,7 +7,6 @@ from models.algorithms.tree_algorithms.rf import forecast_rf_for_single_customer
 from models.base import ForecastModel
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
 
 class RandomForestModel(ForecastModel):
 

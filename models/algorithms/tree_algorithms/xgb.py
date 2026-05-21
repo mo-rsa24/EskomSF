@@ -1,4 +1,5 @@
 from data.dml import *
+import traceback
 import pandas as pd
 
 from db.error_logger import insert_profiling_error
@@ -13,10 +14,7 @@ from models.base import ForecastModel
 from models.forecast_validation import run_forecast_sanity_checks
 from profiler.errors.validation import invalid_length, invalid_series, invalid_forecast_horizon
 
-# Setup logger with basic configuration
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
 
 
 
@@ -90,7 +88,22 @@ def forecast_xgb_for_single_customer(model: ForecastModel):
             for pod_id in unique_pod_ids:
                 pod_df = customer_data[customer_data["PodID"] == pod_id].sort_values('ReportingMonth')
                 logger.info(f"🚀 Forecasting Customer {customer_id}, Pod {pod_id}")
-                pod_perf = forecast_for_podel_id(pod_df, customer_id, pod_id, consumption_types, ufm_config)
+                try:
+                    pod_perf = forecast_for_podel_id(pod_df, customer_id, pod_id, consumption_types, ufm_config)
+                except Exception as pod_exc:
+                    logger.warning(
+                        f"⚠️ Forecasting failed for Pod {pod_id} @ Customer {customer_id}: {pod_exc}",
+                        exc_info=True,
+                    )
+                    insert_profiling_error(
+                        log_id=None,
+                        error=str(pod_exc),
+                        traceback=traceback.format_exc(),
+                        error_type="ModelFitFailure",
+                        severity="high",
+                        component="xgb",
+                    )
+                    continue
                 consumer_perf.pod_by_id_performance.append(pod_perf)
 
                 # --- Performance Dataclass (Modularized) ---
@@ -117,7 +130,7 @@ def forecast_xgb_for_single_customer(model: ForecastModel):
         insert_profiling_error(
             log_id=None,
             error=meta["message"],
-            traceback="",  # or traceback.format_exc()
+            traceback=traceback.format_exc(),
             error_type="ModelFitFailure",
             severity=meta["severity"],
             component=meta["component"]
@@ -161,61 +174,69 @@ def forecast_for_podel_id(
             data.append(_collect_metrics(pod_id, customer_id, consumption_type, forecast))
             continue
 
-        forecast_horizon_months = ((end_fc.year - pod_df.index.max().year) * 12 +
-                                   (end_fc.month - pod_df.index.max().month))
-        year_lags = [12 * i for i in range(1, forecast_horizon_months // 12 + 1)]
-        lags = base_lags + year_lags
+        try:
+            forecast_horizon_months = ((end_fc.year - pod_df.index.max().year) * 12 +
+                                       (end_fc.month - pod_df.index.max().month))
+            year_lags = [12 * i for i in range(1, forecast_horizon_months // 12 + 1)]
+            lags = base_lags + year_lags
 
-        year_windows = [12 * i for i in range(1, forecast_horizon_months // 12 + 1)]
-        windows = base_windows + year_windows
+            year_windows = [12 * i for i in range(1, forecast_horizon_months // 12 + 1)]
+            windows = base_windows + year_windows
 
-        # pod_df, feature_cols, stl_obj = engineer_data(pod_df, consumption_type, lags, windows)
-        pod_df, feature_cols, stl_obj, history_series = engineer_data(pod_df, consumption_type, lags, windows)
+            pod_df, feature_cols, stl_obj, history_series = engineer_data(pod_df, consumption_type, lags, windows)
 
-        train_df, test_df = split_train_test(pod_df, test_months)
-        if train_df.empty or test_df.empty:
+            train_df, test_df = split_train_test(pod_df, test_months)
+            if train_df.empty or test_df.empty:
+                logger.warning(
+                    f"🚫 Not enough data after split for {consumption_type} @ Pod {pod_id}. Skipping."
+                )
+                forecast = pd.Series([0] * len(forecast_horizon), index=forecast_horizon)
+                data.append(_collect_metrics(pod_id, customer_id, consumption_type, forecast))
+                continue
+            X_train, y_train = train_df[feature_cols], train_df["deseasoned"]
+            X_test, y_test = test_df[feature_cols], test_df["deseasoned"]
+
+            xgb_params_tuple = get_model_hyperparameters("xgboost", ufm_config.model_parameters)
+            logger.info(f"💡 Extracted hyperparameters={xgb_params_tuple}")
+
+            xgb_model = train_xgb(X_train, y_train, xgb_params_tuple)
+
+            train_pred_ds = xgb_model.predict(X_train)
+            test_pred_ds = xgb_model.predict(X_test)
+
+            # re-add seasonality
+            train_pred = train_pred_ds + train_df["seasonal"]
+            test_pred = test_pred_ds + test_df["seasonal"]
+
+            # plot_train_test(train_df, test_df, consumption_type, train_pred, test_pred)
+
+            metrics, baseline_metrics = evaluate_predictions(y_test, test_pred)
+
+            fc_df = recursive_forecast(history_series, stl_obj, xgb_model,
+                                       feature_cols, start_fc, end_fc,
+                                       lags, windows)
+            future_forecast = fc_df['forecast']
+            data.append(_collect_metrics(
+                pod_id, customer_id, consumption_type,
+                future_forecast, metrics, baseline_metrics
+            ))
+            # plot_forecast(pod_df, fc_df, consumption_type, end_fc)
+        except Exception as pipeline_exc:
             logger.warning(
-                f"🚫 Not enough data after split for {consumption_type} @ Pod {pod_id}. Skipping."
+                f"⚠️ XGBoost pipeline failed for {consumption_type} @ Pod {pod_id}: {pipeline_exc}",
+                exc_info=True,
+            )
+            meta = get_error_metadata("ModelFitFailure", {"exception": str(pipeline_exc)})
+            insert_profiling_error(
+                log_id=None,
+                error=meta["message"],
+                traceback=traceback.format_exc(),
+                error_type="ModelFitFailure",
+                severity=meta["severity"],
+                component=meta["component"],
             )
             forecast = pd.Series([0] * len(forecast_horizon), index=forecast_horizon)
             data.append(_collect_metrics(pod_id, customer_id, consumption_type, forecast))
-            continue
-        X_train, y_train = train_df[feature_cols], train_df["deseasoned"]
-        X_test, y_test = test_df[feature_cols], test_df["deseasoned"]
-
-        xgb_params_tuple = get_model_hyperparameters("xgboost", ufm_config.model_parameters)
-        logger.info(f"💡 Extracted hyperparameters={xgb_params_tuple}")
-
-        try:
-            xgb_model = train_xgb(X_train, y_train, xgb_params_tuple)
-        except Exception as model_fit_exception:
-            meta = get_error_metadata("ModelFitFailure", {"exception": str(model_fit_exception)})
-            insert_profiling_error(log_id=None, error=meta["message"], traceback="", error_type="ModelFitFailure",
-                                   severity=meta["severity"], component=meta["component"])
-            forecast = pd.Series([0] * len(forecast_horizon), index=forecast_horizon)
-            data.append(_collect_metrics(pod_id, customer_id, consumption_type, forecast))
-            continue
-
-        train_pred_ds = xgb_model.predict(X_train)
-        test_pred_ds = xgb_model.predict(X_test)
-
-        # re-add seasonality
-        train_pred = train_pred_ds + train_df["seasonal"]
-        test_pred = test_pred_ds + test_df["seasonal"]
-
-        # plot_train_test(train_df, test_df, consumption_type, train_pred, test_pred)
-
-        metrics, baseline_metrics = evaluate_predictions(y_test, test_pred)
-
-        fc_df = recursive_forecast(history_series, stl_obj, xgb_model,
-                                   feature_cols, start_fc, end_fc,
-                                   lags, windows)
-        future_forecast = fc_df['forecast']
-        data.append(_collect_metrics(
-            pod_id, customer_id, consumption_type,
-            future_forecast, metrics, baseline_metrics
-        ))
-        # plot_forecast(pod_df, fc_df, consumption_type, end_fc)
     return PodIDPerformanceData(
         pod_id=pod_id,
         forecast_method_name=ufm_config.forecast_method_name,

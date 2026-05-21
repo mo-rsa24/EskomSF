@@ -42,12 +42,14 @@ logging.getLogger("py4j.clientserver").setLevel(logging.WARNING)
 enabled = load_yaml_config().get("profiling", {}).get("enabled", True)
 
 class ForecastDataset:
-    def __init__(self, databrick_task_id: int, save: bool = False, spark: SparkSession = None):
+    def __init__(self, databrick_task_id: int, save: bool = False, spark: SparkSession = None,
+                 csv_path: str = None, model: str = "xgboost",
+                 start_date: str = None, end_date: str = None):
         self.databrick_task_id = databrick_task_id
         self.save = save
         self.spark = spark
-        self.ufm_config = self.load_ufm_config()
-        self.user_forecast_data: pd.DataFrame()
+        self._csv_path = csv_path
+        self.user_forecast_data: pd.DataFrame = pd.DataFrame()
         self.raw_df: pd.DataFrame = pd.DataFrame()
         self.processed_df: pd.DataFrame = pd.DataFrame()
         self.metadata: dict = {}
@@ -57,6 +59,28 @@ class ForecastDataset:
         self.unique_customers: list = []
         self.unique_pod_ids: list = []
         self.forecast_dates: pd.DatetimeIndex = pd.DatetimeIndex([])
+
+        if csv_path:
+            self.ufm_config = self._build_csv_config(model, start_date, end_date)
+        else:
+            self.ufm_config = self.load_ufm_config()
+
+    def _build_csv_config(self, model: str, start_date: str, end_date: str) -> ForecastConfig:
+        """Build a minimal ForecastConfig from CLI args for CSV mode (no DB required)."""
+        s = pd.Timestamp(start_date) if start_date else pd.Timestamp.now().normalize()
+        e = pd.Timestamp(end_date) if end_date else s + pd.DateOffset(months=12)
+        logger.info(f"📂 CSV mode: model={model}, start={s.date()}, end={e.date()}")
+        return ForecastConfig(
+            forecast_method_id=0,
+            forecast_method_name=model,
+            model_parameters="",
+            region="",
+            status="csv",
+            user_forecast_method_id=0,
+            start_date=s,
+            end_date=e,
+            databrick_task_id=0,
+        )
 
     @profiled_function(category="dataset",enabled=profiling_switch.enabled)
     def load_ufm_config(self) -> ForecastConfig:
@@ -96,11 +120,18 @@ class ForecastDataset:
 
     def load_data(self) -> None:
         """
-        Function: Perform dbo.PredictiveInputData() to fetch and filter data from the database
+        Function: Perform dbo.PredictiveInputData() to fetch and filter data from the database,
+        or load directly from a CSV file when csv_path was provided.
         Returns: A dataframe that contains all the filtered data
         Raises: ValueError: If the data loaded from the database is empty.
         """
-        self.raw_df = load_and_prepare_data(self.ufm_config, save= self.save,spark = self.spark)
+        if self._csv_path:
+            logger.info(f"📂 Loading data from CSV: {self._csv_path}")
+            from data.dml import clean_dataframe
+            self.raw_df = pd.read_csv(self._csv_path)
+            self.raw_df = clean_dataframe(self.raw_df)
+        else:
+            self.raw_df = load_and_prepare_data(self.ufm_config, save=self.save, spark=self.spark)
         if self.raw_df.empty:
             meta = get_error_metadata("EmptySeries", {"forecast_method_id": self.ufm_config.forecast_method_id})
             insert_profiling_error(
@@ -250,20 +281,24 @@ class ForecastDataset:
             )
             safe_exit(meta["code"], meta["message"])
 
-        try:
-            self.metadata = extract_metadata(self.user_forecast_data)
-            logger.info(f"✅ Extracted metadata: {self.metadata}")
-        except Exception as e:
-            meta = get_error_metadata("ModelConfigMissing", {"field": "raw_df"})
-            insert_profiling_error(
-                log_id=None,
-                error=meta["message"],
-                traceback="",  # or traceback.format_exc()
-                error_type="ModelConfigMissing",
-                severity=meta["severity"],
-                component=meta["component"]
-            )
-            safe_exit(meta["code"], meta["message"])
+        if self._csv_path:
+            logger.info("📂 CSV mode: skipping metadata extraction from user_forecast_data.")
+            self.metadata = {}
+        else:
+            try:
+                self.metadata = extract_metadata(self.user_forecast_data)
+                logger.info(f"✅ Extracted metadata: {self.metadata}")
+            except Exception as e:
+                meta = get_error_metadata("ModelConfigMissing", {"field": "raw_df"})
+                insert_profiling_error(
+                    log_id=None,
+                    error=meta["message"],
+                    traceback="",  # or traceback.format_exc()
+                    error_type="ModelConfigMissing",
+                    severity=meta["severity"],
+                    component=meta["component"]
+                )
+                safe_exit(meta["code"], meta["message"])
 
         self.customer_ids = parse_json_column(self.raw_df, "CustomerJSON")
         self.variable_ids = parse_json_column(self.raw_df, "varJSON", key="VariableID")

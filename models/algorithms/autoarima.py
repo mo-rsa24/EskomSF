@@ -17,10 +17,7 @@ from models.algorithms.utilities import prepare_time_series_data, evaluate_predi
 from models.base import ForecastModel
 from models.forecast_validation import run_forecast_sanity_checks
 
-# Setup logger with basic configuration
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
 
 warnings.filterwarnings("ignore", category=ConvergenceWarning)
 # Optionally, define a named tuple for forecast results

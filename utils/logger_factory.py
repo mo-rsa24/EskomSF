@@ -1,4 +1,3 @@
-# logger_factory.py
 from config.config_service import get_profiling_engine, get_active_env
 
 def get_logger():

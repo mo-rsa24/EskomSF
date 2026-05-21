@@ -1,5 +1,6 @@
-from typing import Union
-
+﻿from typing import Union
+from types import SimpleNamespace
+import logging
 from statsmodels.tsa.seasonal import STL
 from sklearn.ensemble import RandomForestRegressor
 import matplotlib.pyplot as plt
@@ -8,26 +9,47 @@ import pandas as pd
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from xgboost import XGBRegressor
 
+logger = logging.getLogger(__name__)
+
 
 def engineer_data(df: pd.DataFrame, cons: str, lags: list, windows: list):
+    n = len(df)
+    valid_lags = [lag for lag in lags if lag <= n - 1]
+    valid_windows = [w for w in windows if w <= n - 1]
+    if len(valid_lags) < len(lags) or len(valid_windows) < len(windows):
+        logger.debug("Pruned lag/window features for n=%s", n)
+
     df, stl_obj = stl_decompose(df, cons, period=12)
     df = engineer_calendar(df)
-    df = engineer_lags(df, "deseasoned", lags)
-    df = engineer_rolling(df, "deseasoned", windows)
-    df = engineer_interactions(df, lags)
+    df = engineer_lags(df, "deseasoned", valid_lags)
+    df = engineer_rolling(df, "deseasoned", valid_windows)
+    df = engineer_interactions(df, valid_lags)
     full_history = df["deseasoned"].copy()
-    df, feature_cols = assemble_features(df, lags, windows)
+    df, feature_cols = assemble_features(df, valid_lags, valid_windows)
     return df, feature_cols, stl_obj, full_history
 
-def stl_decompose(df: pd.DataFrame, target: str, period: int = 12) -> (pd.DataFrame, STL):
-    """
-    Perform STL seasonal decomposition and add 'seasonal' and 'deseasoned' columns.
-    Returns modified df and fitted STL object.
-    """
-    stl = STL(df[target], period=period, robust=True).fit()
-    df["seasonal"] = stl.seasonal
-    df["deseasoned"] = df[target] - df["seasonal"]
-    return df, stl
+def stl_decompose(df: pd.DataFrame, target: str, period: int = 12):
+    y = df[target].astype(float)
+    use_stl = len(y) >= 24  # need >=2 cycles for stable monthly STL
+
+    if use_stl:
+        stl = STL(y, period=period, robust=True).fit()
+        seasonal = stl.seasonal
+        deseasoned = y - seasonal
+        # collapse guard: STL sometimes overfits when data are short or quirky
+        if deseasoned.std(ddof=1) < 1e-6 or deseasoned.std(ddof=1) < 0.05 * y.std(ddof=1):
+            seasonal = pd.Series(0.0, index=y.index)
+            deseasoned = y.copy()
+            stl = SimpleNamespace(seasonal=seasonal)
+    else:
+        seasonal = pd.Series(0.0, index=y.index)
+        deseasoned = y.copy()
+        stl = SimpleNamespace(seasonal=seasonal)
+
+    out = df.copy()
+    out["seasonal"] = seasonal
+    out["deseasoned"] = deseasoned
+    return out, stl
 
 
 def engineer_calendar(df: pd.DataFrame) -> pd.DataFrame:
@@ -61,18 +83,14 @@ def engineer_rolling(df: pd.DataFrame, base_series: str, windows: list) -> pd.Da
 
 
 def engineer_interactions(df: pd.DataFrame,  lags: list[int]) -> pd.DataFrame:
-    """
-    Add custom interaction terms, e.g. lag12 * month_sin.
-    """
     year_lags = [lag for lag in lags if lag % 12 == 0]
-
     for lag in year_lags:
         col = f"ds_lag{lag}"
-        # sin interaction
-        df[f"{col}_x_sin"] = df[col] * df["month_sin"]
-        # cos interaction (optional, but often useful)
-        df[f"{col}_x_cos"] = df[col] * df["month_cos"]
+        if col in df and df[col].notna().any():
+            df[f"{col}_x_sin"] = df[col] * df["month_sin"]
+            df[f"{col}_x_cos"] = df[col] * df["month_cos"]
     return df
+
 
 
 def assemble_features(
@@ -97,7 +115,7 @@ def assemble_features(
 
     # 5) assemble everything
     feature_cols = lag_cols + roll_cols + calendar_cols + interaction_cols
-
+    feature_cols = [c for c in feature_cols if c in df.columns and df[c].notna().any()]
     # 6) drop any rows missing *any* of these features or the target
     df_clean = df.dropna(subset=feature_cols + ["deseasoned"])
 
@@ -188,13 +206,14 @@ def recursive_forecast(
     results = []
     for date in forecast_index:
         m = date.month
-        seasonal = season_map[m]
+        seasonal = season_map.get(m, 0.0)
         # construct features
         row = {}
         for lag in lags:
             lag_date = date - pd.DateOffset(months=lag)
             if lag_date in history_ds.index:
-                row[f"ds_lag{lag}"] = history_ds.loc[lag_date]
+                val = history_ds.loc[lag_date]
+                row[f"ds_lag{lag}"] = float(val.iloc[0]) if isinstance(val, pd.Series) else float(val)
             else:
                 row[f"ds_lag{lag}"] = np.nan
         for w in windows:
@@ -211,6 +230,8 @@ def recursive_forecast(
         X_pred = pd.DataFrame([row], index=[date])[features]
         ds_pred = rf.predict(X_pred)[0]
         history_ds.loc[date] = ds_pred
+        if not history_ds.index.is_monotonic_increasing:
+            history_ds = history_ds.sort_index()
         results.append((date, ds_pred + seasonal))
     return pd.DataFrame(results, columns=["date","forecast"]).set_index("date")
 
@@ -218,7 +239,7 @@ def plot_forecast(pod_df: pd.DataFrame, fc_df: pd.DataFrame, consumption_type: s
     plt.figure(figsize=(10, 4))
     plt.plot(pod_df.index, pod_df[consumption_type], label="Historical")
     plt.plot(fc_df.index, fc_df["forecast"], "--", label="Forecast")
-    plt.title(f"{consumption_type}: {pod_df.index.min().date()} → {end_fc}")
+    plt.title(f"{consumption_type}: {pod_df.index.min().date()} â†’ {end_fc}")
     plt.xlabel("ReportingMonth")
     plt.ylabel(consumption_type)
     plt.legend()
@@ -261,7 +282,7 @@ def naive_last_value_forecast(
 ) -> (pd.Series, dict):
     """
     Splits full_series into train/test by `train_fraction`, computes
-    a “last‐value” forecast for the test period and future horizon.
+    a â€œlastâ€valueâ€ forecast for the test period and future horizon.
     Returns:
       - in_sample_baseline: pd.Series indexed by the test portion
       - future_baseline: pd.Series indexed by forecast_horizon
@@ -277,7 +298,7 @@ def naive_last_value_forecast(
     test_series = full_series.iloc[train_end:]
 
     if train_series.empty:
-        # no training data → baseline is zeros
+        # no training data â†’ baseline is zeros
         baseline_metrics = {"MAE": 0.0, "RMSE": 0.0, "R2": 0.0}
         future_baseline = pd.Series(
             [0.0] * len(forecast_horizon), index=forecast_horizon
@@ -286,7 +307,7 @@ def naive_last_value_forecast(
 
     last_val = train_series.iloc[-1]
 
-    # 2) In‐sample (test) baseline: repeat last_val for each index in test_series
+    # 2) Inâ€sample (test) baseline: repeat last_val for each index in test_series
     in_sample_baseline = pd.Series(
         [last_val] * len(test_series), index=test_series.index
     )
@@ -294,7 +315,7 @@ def naive_last_value_forecast(
     # 3) Compute baseline metrics on test_series vs. in_sample_baseline
     mae_baseline = float(mean_absolute_error(test_series.values, in_sample_baseline.values))
     rmse_baseline = float(np.sqrt(mean_squared_error(test_series.values, in_sample_baseline.values)))
-    # R² of a flat‐line model: if test_series is constant, define R² = 1.0; else:
+    # RÂ² of a flatâ€line model: if test_series is constant, define RÂ² = 1.0; else:
     if np.allclose(test_series.values, last_val):
         r2_baseline = 1.0
     else:
@@ -306,9 +327,10 @@ def naive_last_value_forecast(
         "R2": r2_baseline
     }
 
-    # 4) Future‐horizon baseline: repeat last_val for every date
+    # 4) Futureâ€horizon baseline: repeat last_val for every date
     future_baseline = pd.Series(
         [last_val] * len(forecast_horizon), index=forecast_horizon
     )
 
     return in_sample_baseline, future_baseline, baseline_metrics
+

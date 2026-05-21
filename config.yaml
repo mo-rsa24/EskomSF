@@ -89,7 +89,7 @@ model_parameters: ""
 
 # Default hyperparameters for each model if the incoming value is null.
 model_defaults:
-  arima: "(3,3,3)"
+  arima: "(2,1,2)"
   sarima: "(1,1,1)(1,1,1,4)"
   randomforest: "(50,10,2,1,3,true)"
   xgboost: "(5,2,0.3,0.3,0.8)"

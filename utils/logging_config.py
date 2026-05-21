@@ -10,8 +10,10 @@ def get_logging_logger(name: str, level=logging.INFO) -> logging.Logger:
             format="%(asctime)s | %(levelname)s | %(name)s | %(message)s"
         )
 
-        if is_databricks():
-            for noisy in ["py4j", "urllib3", "azure", "matplotlib", "asyncio", "pyspark"]:
-                logging.getLogger(noisy).setLevel(logging.WARNING)
+    if is_databricks():
+        logging.getLogger().setLevel(logging.WARNING)
+        logger.setLevel(logging.WARNING)
+        for noisy in ["py4j", "urllib3", "azure", "matplotlib", "asyncio", "pyspark"]:
+            logging.getLogger(noisy).setLevel(logging.WARNING)
 
     return logger

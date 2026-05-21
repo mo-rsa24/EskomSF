@@ -1,8 +1,6 @@
 import pandas as pd
 import logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
 
 
 def invalid_length(series: pd.Series, consumption_type:str, period: int = 12):
@@ -21,7 +19,7 @@ def invalid_length(series: pd.Series, consumption_type:str, period: int = 12):
             severity=meta["severity"],
             component=meta["component"]
         )
-        logger.info(meta["message"])
+        logger.warning(meta["message"])
         return True
     else:
         return False
@@ -66,7 +64,7 @@ def invalid_forecast_horizon(pod_id: str, series: pd.Series, consumption_type:st
                 severity=meta["severity"],
                 component=meta["component"]
             )
-            logger.info(f"⛔ Forecast gap too large for {consumption_type} @ Pod {pod_id}. Skipping.")
+            logger.warning(f"Forecast gap too large for {consumption_type} @ Pod {pod_id}. Skipping.")
             return True
     else:
         return False
